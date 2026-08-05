@@ -396,7 +396,7 @@ final class AppState: ObservableObject {
                     }
                     self.isCapturing = true
                     self.statusMessage = "Capturing — \(source)"
-                    self.quietBanner.showMeetingStatus(message: "Quiet · Capturing")
+                    self.quietBanner.showMeetingStatus(message: "Quiet · Capturing", capturing: true)
                 } catch is CancellationError {
                     // handleMeetingEnded cancelled us mid-startup — undo
                     // whatever half of the pipeline already came up.
