@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import AVFoundation
+import FoundationModels
 import SwiftUI
 
 struct OnboardingFlow: View {
@@ -12,6 +13,7 @@ struct OnboardingFlow: View {
         case welcome
         case scan
         case permissions
+        case speechModel
         case hostOwnsNotes
         case done
     }
@@ -30,6 +32,10 @@ struct OnboardingFlow: View {
                     }
                 case .permissions:
                     PermissionsView {
+                        step = .speechModel
+                    }
+                case .speechModel:
+                    SpeechModelSetupView {
                         step = .hostOwnsNotes
                     }
                 case .hostOwnsNotes:
@@ -256,5 +262,117 @@ struct PermissionsView: View {
             }
         }
         .padding(.vertical, 4)
+    }
+}
+
+struct SpeechModelSetupView: View {
+    var onContinue: () -> Void
+
+    @State private var phase: Phase = .checking
+    @State private var progress: Double = 0
+    @State private var appleIntelligenceAvailable = true
+
+    enum Phase: Equatable {
+        case checking
+        case downloading
+        case installed
+        case unavailable
+        case failed(String)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Download the speech model")
+                .font(.title3.weight(.medium))
+            Text("Quiet transcribes on this Mac — audio never touches a server. One download now means your first meeting works even offline.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            statusRow
+
+            if !appleIntelligenceAvailable {
+                Label(
+                    "Turn on Apple Intelligence for summaries — transcripts work either way.",
+                    systemImage: "sparkles"
+                )
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            HStack {
+                if case .failed = phase {
+                    Button("Try again") {
+                        Task { await download() }
+                    }
+                }
+                Spacer()
+                Button("Continue") { onContinue() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(phase == .checking || phase == .downloading)
+            }
+        }
+        .task {
+            if case .available = SystemLanguageModel.default.availability {
+                appleIntelligenceAvailable = true
+            } else {
+                appleIntelligenceAvailable = false
+            }
+            await download()
+        }
+    }
+
+    @ViewBuilder
+    private var statusRow: some View {
+        switch phase {
+        case .checking:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Checking installed models…").foregroundStyle(.secondary)
+            }
+        case .downloading:
+            VStack(alignment: .leading, spacing: 6) {
+                ProgressView(value: progress)
+                Text("Downloading the on-device speech model…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        case .installed:
+            Label("Speech model ready — transcription works offline.", systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case .unavailable:
+            Label("On-device transcription isn’t available for your language yet. Quiet still silences competitors during meetings.", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        case .failed(let detail):
+            Label("Download failed: \(detail)", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func download() async {
+        switch await TranscriptionAssets.state() {
+        case .installed:
+            phase = .installed
+            return
+        case .unavailable, .unsupportedLocale:
+            phase = .unavailable
+            return
+        case .notInstalled, .downloading:
+            break
+        }
+
+        phase = .downloading
+        do {
+            // Capture only the (Sendable) binding — the view struct itself is not.
+            let progressBinding = $progress
+            try await TranscriptionAssets.ensureInstalled { value in
+                Task { @MainActor in progressBinding.wrappedValue = value }
+            }
+            phase = .installed
+        } catch {
+            phase = .failed(error.localizedDescription)
+        }
     }
 }

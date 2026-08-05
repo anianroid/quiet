@@ -32,10 +32,6 @@
 	<string>Quiet transcribes meetings on your Mac using Apple speech recognition. Audio never leaves your device.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Quiet silences competing notetaker helpers during meetings.</string>
-	<key>NSCalendarsUsageDescription</key>
-	<string>Quiet optionally uses your calendar as a hint for scheduled calls. Impromptu meetings still work without calendar access.</string>
-	<key>NSCalendarsFullAccessUsageDescription</key>
-	<string>Quiet optionally uses your calendar as a hint for scheduled calls. Impromptu meetings still work without calendar access.</string>
 	<key>NSScreenCaptureUsageDescription</key>
 	<string>Quiet needs Screen and System Audio Recording to hear meeting playback without joining as a bot.</string>
 </dict>

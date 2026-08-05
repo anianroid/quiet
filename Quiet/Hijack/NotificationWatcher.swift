@@ -1,18 +1,28 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import os.log
 
 /// Layer B — dismiss competing **notetaker banners only**.
-/// Deliberately narrow: never walk Zoom/Chrome/System Settings UI trees.
+/// Deliberately narrow: never walk Zoom/Chrome/System Settings UI trees, and
+/// only dismiss when a vendor marker (Otter, Granola, Fireflies…) co-occurs
+/// with a generic notetaker phrase — a user's own "Meeting notes" reminder is
+/// never eaten.
 @MainActor
 final class NotificationWatcher {
-    private let catalog: CompetitorCatalog
+    private static let logger = Logger(subsystem: "notes.quiet.app", category: "NotificationWatcher")
+
     private var timer: Timer?
-    private var patterns: [String] = []
     private var isSweeping = false
 
-    /// Precise notetaker-prompt copy. Avoid lone vendor names that match unrelated banners.
-    private static let builtinPatterns: [String] = [
+    /// Vendor identity markers, matched as whole-word token subsequences.
+    /// Derived from the catalog (entry names + notification title patterns)
+    /// plus a builtin seed so an empty catalog still covers the big names.
+    private let vendorMarkers: [String]
+
+    /// Generic notetaker-prompt copy. Never sufficient alone — a vendor marker
+    /// must also be present in the banner text before we dismiss.
+    private static let genericPhrases: [String] = [
         "Meeting detected",
         "Start Notetaker",
         "Note-taking is available",
@@ -20,25 +30,35 @@ final class NotificationWatcher {
         "Notetaker is ready",
         "Take notes with",
         "Take notes",
-        "AI Companion",
         "Start taking notes",
         "Meeting notes"
     ]
 
+    /// Tokens the generic phrases are made of (plus filler like "Now" that
+    /// competitors put in banner titles). A catalog string whose tokens are
+    /// all generic carries no vendor identity and is discarded.
+    /// "read" is here so Read AI's bare "Read" title pattern is discarded —
+    /// it's a common English word, and "Read AI" (via its "ai" token) still
+    /// carries vendor identity on its own.
+    private static let genericTokens: Set<String> = [
+        "meeting", "detected", "start", "notetaker", "note", "taking",
+        "is", "available", "taker", "ready", "take", "notes", "with",
+        "now", "browser", "helper", "helpers", "read"
+    ]
+
+    /// Known vendors, kept even if the bundled catalog fails to load.
+    private static let builtinVendorMarkers: [String] = [
+        "Otter", "Granola", "Fireflies", "Fathom", "AI Companion", "Notion"
+    ]
+
     init(catalog: CompetitorCatalog) {
-        self.catalog = catalog
-        let catalogPrecise = catalog.dismissPatterns.filter { pattern in
-            let p = pattern.lowercased()
-            return p.contains("meeting detected")
-                || p.contains("notetaker")
-                || p.contains("note-taking is available")
-                || p.contains("take notes")
-                || p.contains("start notetaker")
-                || p.contains("ai companion")
-                || p.contains("meeting notes")
-                || p.contains("start taking notes")
+        let candidates = catalog.entries.map(\.name)
+            + catalog.entries.flatMap(\.notificationTitlePatterns)
+        let derived = candidates.filter { candidate in
+            let tokens = NameTokenMatcher.tokens(of: candidate)
+            return !tokens.isEmpty && !tokens.allSatisfy { Self.genericTokens.contains($0) }
         }
-        self.patterns = Array(Set(Self.builtinPatterns + catalogPrecise))
+        self.vendorMarkers = Array(Set(derived + Self.builtinVendorMarkers))
     }
 
     func start() {
@@ -85,6 +105,7 @@ final class NotificationWatcher {
 
         let blob = elementTextBlob(element)
         if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Quiet") {
+            Self.logger.info("Dismissing notetaker banner: \(String(blob.prefix(120)), privacy: .public)")
             _ = pressCloseButton(in: element)
             AXUIElementPerformAction(element, kAXCancelAction as CFString)
             return
@@ -98,8 +119,13 @@ final class NotificationWatcher {
         }
     }
 
-    private func isNotetakerPrompt(_ text: String) -> Bool {
-        patterns.contains { text.localizedCaseInsensitiveContains($0) }
+    /// A banner is a notetaker prompt only when a generic phrase AND a vendor
+    /// marker are both present. "Meeting notes" alone is never dismissed.
+    func isNotetakerPrompt(_ text: String) -> Bool {
+        guard Self.genericPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
+            return false
+        }
+        return NameTokenMatcher.name(text, matchesAnyOf: vendorMarkers)
     }
 
     private func elementTextBlob(_ element: AXUIElement) -> String {

@@ -24,9 +24,10 @@ final class PCMBufferBox: @unchecked Sendable {
     init(_ buffer: AVAudioPCMBuffer) { self.buffer = buffer }
 }
 
-/// Holds the AsyncStream continuation for cross-thread yields from the HAL IO thread.
-/// Must NOT touch MainActor — audio callbacks run on `com.apple.audio.IOThread.client`.
-private final class ContinuationBox: @unchecked Sendable {
+/// Holds the AsyncStream continuation for cross-thread yields from audio callback threads
+/// (the HAL IO thread here, the AVAudioEngine render thread in `MicCaptureSession`).
+/// Must NOT touch MainActor — audio callbacks trap if they land on an actor's queue.
+final class ContinuationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var continuation: AsyncStream<PCMBufferBox>.Continuation?
 

@@ -39,6 +39,22 @@ struct MenuBarView: View {
 
         Divider()
 
+        if appState.isPaused {
+            if let until = appState.pausedUntil {
+                Text("Paused until \(until.formatted(date: .omitted, time: .shortened))")
+                    .font(.caption)
+            }
+            Button("Resume now") {
+                appState.resumeNow()
+            }
+        } else {
+            Button("Pause Quiet for 1 hour") {
+                appState.pause()
+            }
+        }
+
+        Divider()
+
         Button("Settings…") {
             openWindow(id: "settings")
         }
@@ -86,10 +102,12 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                Toggle("Auto-capture (experimental — can crash Quiet)", isOn: $appState.autoCaptureEnabled)
-                Text("Leave OFF. Silencing works without capture.")
+                Toggle("Take notes during meetings (beta)", isOn: $appState.autoCaptureEnabled)
+                Text("On-device transcription and summaries — audio never leaves this Mac.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                SpeechModelRow()
 
                 Section("Permissions") {
                     LabeledContent("Screen & System Audio") {
@@ -128,6 +146,65 @@ struct SettingsView: View {
                 .onAppear { appState.rescanCompetitors() }
         }
         .padding(.top, 8)
+    }
+}
+
+/// Settings row for the on-device speech model: shows the installed state and
+/// drives the download with progress when the model is missing.
+private struct SpeechModelRow: View {
+    @State private var assetState: TranscriptionAssets.State?
+    @State private var progress: Double = 0
+    @State private var errorText: String?
+
+    var body: some View {
+        LabeledContent("Speech model") {
+            switch assetState {
+            case nil:
+                Text("Checking…")
+                    .foregroundStyle(.secondary)
+            case .installed:
+                Text("Installed")
+            case .unavailable:
+                Text("Not available on this Mac")
+                    .foregroundStyle(.secondary)
+            case .unsupportedLocale:
+                Text("Language not supported yet")
+                    .foregroundStyle(.secondary)
+            case .downloading:
+                ProgressView(value: progress)
+                    .frame(width: 140)
+            case .notInstalled:
+                Button("Download") {
+                    Task { await download() }
+                }
+            }
+        }
+        .task {
+            assetState = await TranscriptionAssets.state()
+        }
+
+        if let errorText {
+            Text(errorText)
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
+    }
+
+    private func download() async {
+        assetState = .downloading
+        progress = 0
+        errorText = nil
+        do {
+            // Capture only the (Sendable) binding — the view struct itself is not.
+            let progressBinding = $progress
+            try await TranscriptionAssets.ensureInstalled { value in
+                Task { @MainActor in progressBinding.wrappedValue = value }
+            }
+            assetState = .installed
+        } catch {
+            errorText = error.localizedDescription
+            assetState = await TranscriptionAssets.state()
+        }
     }
 }
 

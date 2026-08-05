@@ -44,3 +44,40 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
     entitlements:
       path: Quiet/Quiet.entitlements
+      properties:
+        # Hardened runtime blocks AVAudioEngine input without this —
+        # without it the mic side of every transcript silently fails.
+        com.apple.security.device.audio-input: true
+  QuietTests:
+    type: bundle.unit-test
+    platform: macOS
+    # Logic tests compile the app sources directly (minus the @main entry point)
+    # instead of injecting into a running Quiet.app — hosted tests would launch
+    # the real guardian (Accessibility prompt, competitor watchdog) mid-test.
+    sources:
+      - path: QuietTests
+      - path: Quiet
+        excludes:
+          - "QuietApp.swift"
+          - "**/*.md"
+    settings:
+      base:
+        PRODUCT_NAME: QuietTests
+        PRODUCT_BUNDLE_IDENTIFIER: notes.quiet.tests
+        GENERATE_INFOPLIST_FILE: YES
+        ENABLE_HARDENED_RUNTIME: NO
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_IDENTITY: "-"
+        DEVELOPMENT_TEAM: ""
+        CODE_SIGN_ENTITLEMENTS: ""
+schemes:
+  Quiet:
+    build:
+      targets:
+        Quiet: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - QuietTests
