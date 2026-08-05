@@ -14,6 +14,9 @@ final class NotificationWatcher {
 
     private var timer: Timer?
     private var isSweeping = false
+    /// Window-created observers per notification-surface pid — kills a banner
+    /// during its fade-in instead of on the next poll tick.
+    private var observers: [pid_t: AXObserver] = [:]
 
     /// Vendor identity markers, matched as whole-word token subsequences.
     /// Derived from the catalog (entry names + notification title patterns)
@@ -82,6 +85,36 @@ final class NotificationWatcher {
     func stop() {
         timer?.invalidate()
         timer = nil
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        observers.removeAll()
+    }
+
+    private func ensureObserver(for app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard observers[pid] == nil else { return }
+
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            let watcher = Unmanaged<NotificationWatcher>.fromOpaque(refcon).takeUnretainedValue()
+            // The observer's run loop source lives on the main run loop.
+            MainActor.assumeIsolated {
+                watcher.sweep()
+            }
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXObserverAddNotification(
+            observer,
+            appElement,
+            kAXWindowCreatedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        observers[pid] = observer
     }
 
     private func sweep() {
@@ -102,6 +135,7 @@ final class NotificationWatcher {
                 || name.contains("usernoted")
 
             guard isNotificationSurface else { continue }
+            ensureObserver(for: app)
             let element = AXUIElementCreateApplication(app.processIdentifier)
             if UserDefaults.standard.bool(forKey: "quiet.axDump") {
                 dumpTree(element, depth: 0, path: bid.isEmpty ? name : bid)

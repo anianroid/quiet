@@ -35,9 +35,13 @@ final class HostOverlayWatcher {
 
     private var timer: Timer?
     private var isSweeping = false
+    /// Window-created observers per host pid — the instant-suppression path.
+    /// The poll timer stays as the safety net for windows the observer misses.
+    private var observers: [pid_t: AXObserver] = [:]
 
     func start() {
         stop()
+        Self.logger.notice("HostOverlayWatcher.start axTrusted=\(AXIsProcessTrusted())")
         guard AXIsProcessTrusted() else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -50,6 +54,49 @@ final class HostOverlayWatcher {
     func stop() {
         timer?.invalidate()
         timer = nil
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        observers.removeAll()
+    }
+
+    /// Dismissal-on-poll means a pill is visible for up to a second. Observing
+    /// AXWindowCreated fires while the overlay is still fading in, so it never
+    /// visually lands.
+    private func ensureObserver(for app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard observers[pid] == nil else { return }
+
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            let watcher = Unmanaged<HostOverlayWatcher>.fromOpaque(refcon).takeUnretainedValue()
+            // The observer's run loop source lives on the main run loop.
+            MainActor.assumeIsolated {
+                watcher.sweep()
+            }
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXObserverAddNotification(
+            observer,
+            appElement,
+            kAXWindowCreatedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        observers[pid] = observer
+    }
+
+    /// Observers die with their process — drop entries for quit hosts so a
+    /// relaunched app gets a fresh observer on its new pid.
+    private func pruneDeadObservers(livePIDs: Set<pid_t>) {
+        for pid in observers.keys where !livePIDs.contains(pid) {
+            if let observer = observers.removeValue(forKey: pid) {
+                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+            }
+        }
     }
 
     private func sweep() {
@@ -57,17 +104,34 @@ final class HostOverlayWatcher {
         isSweeping = true
         defer { isSweeping = false }
 
+        let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
+        var livePIDs: Set<pid_t> = []
         for app in NSWorkspace.shared.runningApplications {
             guard let bid = app.bundleIdentifier, Self.watchedBundleIds.contains(bid) else { continue }
+            livePIDs.insert(app.processIdentifier)
+            ensureObserver(for: app)
             let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            // Electron only emits its web-content AX tree when an assistive
+            // client asks for it — without this the overlay windows are blank.
+            AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
             var windowsRef: CFTypeRef?
             guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let windows = windowsRef as? [AXUIElement] else { continue }
+                  let windows = windowsRef as? [AXUIElement] else {
+                if debug {
+                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public): no AX windows")
+                }
+                continue
+            }
 
             for window in windows {
-                guard isOverlaySized(window) else { continue }
+                let sized = isOverlaySized(window)
                 var blob = ""
                 collectText(window, into: &blob, depth: 0)
+                if debug {
+                    let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
+                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) overlaySized=\(sized) text=\(String(blob.prefix(200)), privacy: .public)")
+                }
+                guard sized else { continue }
                 guard !blob.isEmpty,
                       Self.overlayPhrases.contains(where: { blob.localizedCaseInsensitiveContains($0) }),
                       !blob.localizedCaseInsensitiveContains("Quiet")
@@ -77,6 +141,16 @@ final class HostOverlayWatcher {
                 Self.logger.notice("Host overlay (\(app.localizedName ?? bid, privacy: .public)) \(closed ? "dismissed" : "matched but not dismissable", privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
             }
         }
+        pruneDeadObservers(livePIDs: livePIDs)
+    }
+
+    private func windowSizeDescription(_ window: AXUIElement) -> String {
+        var sizeRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let value = sizeRef, CFGetTypeID(value) == AXValueGetTypeID() else { return "?" }
+        var size = CGSize.zero
+        AXValueGetValue(value as! AXValue, .cgSize, &size)
+        return "\(Int(size.width))x\(Int(size.height))"
     }
 
     private func isOverlaySized(_ window: AXUIElement) -> Bool {
@@ -111,7 +185,7 @@ final class HostOverlayWatcher {
     }
 
     private func pressCloseButton(in element: AXUIElement, depth: Int) -> Bool {
-        guard depth < 6 else { return false }
+        guard depth < 14 else { return false }
         var childrenRef: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
               let children = childrenRef as? [AXUIElement] else { return false }
@@ -137,7 +211,9 @@ final class HostOverlayWatcher {
     }
 
     private func collectText(_ element: AXUIElement, into blob: inout String, depth: Int) {
-        guard depth < 6, blob.count < 600 else { return }
+        // Electron AX trees nest web content 10+ levels deep — depth must
+        // reach through AXWebArea wrappers to the overlay's actual labels.
+        guard depth < 14, blob.count < 1500 else { return }
         for attribute in [kAXTitleAttribute as String, kAXDescriptionAttribute as String, kAXValueAttribute as String] {
             if let text = copyString(element, attribute), !text.isEmpty {
                 blob += (blob.isEmpty ? "" : " ") + text
