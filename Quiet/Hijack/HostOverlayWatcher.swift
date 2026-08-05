@@ -49,6 +49,35 @@ final class HostOverlayWatcher {
             }
         }
         sweep()
+        if UserDefaults.standard.bool(forKey: "quiet.axProbe") {
+            probePositionSettability()
+        }
+    }
+
+    /// Diagnostics only — writes each watched host's first window back to the
+    /// position it already occupies. A no-op visually; proves whether
+    /// AXPosition is settable on that app before relying on it to hide a pill.
+    func probePositionSettability() {
+        for app in NSWorkspace.shared.runningApplications {
+            guard let bid = app.bundleIdentifier, Self.watchedBundleIds.contains(bid) else { continue }
+            let appElement = AXUIElementCreateApplication(app.processIdentifier)
+            var windowsRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+                  let windows = windowsRef as? [AXUIElement], let window = windows.first else { continue }
+
+            var positionRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+                  let current = positionRef, CFGetTypeID(current) == AXValueGetTypeID() else {
+                Self.logger.notice("AXPROBE \(bid, privacy: .public): position unreadable")
+                continue
+            }
+            var point = CGPoint.zero
+            AXValueGetValue(current as! AXValue, .cgPoint, &point)
+            var same = point
+            guard let value = AXValueCreate(.cgPoint, &same) else { continue }
+            let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+            Self.logger.notice("AXPROBE \(bid, privacy: .public): settable=\(result == .success) status=\(result.rawValue) at=(\(Int(point.x)),\(Int(point.y)))")
+        }
     }
 
     func stop() {
@@ -125,20 +154,25 @@ final class HostOverlayWatcher {
 
             for window in windows {
                 let sized = isOverlaySized(window)
+                // A pill already parked off-screen stays handled — re-moving it
+                // every tick would spam the log with no visible effect.
+                guard sized, !isOffScreen(window) else { continue }
                 var blob = ""
                 collectText(window, into: &blob, depth: 0)
                 if debug {
                     let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
-                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) overlaySized=\(sized) text=\(String(blob.prefix(200)), privacy: .public)")
+                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) text=\(String(blob.prefix(200)), privacy: .public)")
                 }
-                guard sized else { continue }
                 guard !blob.isEmpty,
                       Self.overlayPhrases.contains(where: { blob.localizedCaseInsensitiveContains($0) }),
                       !blob.localizedCaseInsensitiveContains("Quiet")
                 else { continue }
 
-                let closed = dismiss(window)
-                Self.logger.notice("Host overlay (\(app.localizedName ?? bid, privacy: .public)) \(closed ? "dismissed" : "matched but not dismissable", privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
+                if debug {
+                    dumpSubtree(window, depth: 0, path: bid)
+                }
+                let strategy = dismiss(window)
+                Self.logger.notice("Host overlay (\(app.localizedName ?? bid, privacy: .public)) \(strategy, privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
             }
         }
         pruneDeadObservers(livePIDs: livePIDs)
@@ -164,12 +198,60 @@ final class HostOverlayWatcher {
         return size.height > 0 && size.height < Self.maxOverlayHeight
     }
 
-    private func dismiss(_ window: AXUIElement) -> Bool {
-        // Named close action on the window itself, a close/dismiss button in
-        // the subtree, then AXCancel — in order of least surprising behavior.
-        if performNamedCloseAction(on: window) { return true }
-        if pressCloseButton(in: window, depth: 0) { return true }
-        return AXUIElementPerformAction(window, kAXCancelAction as CFString) == .success
+    /// Ladder from least to most forceful. Notion's pill exposes no close
+    /// affordance at all, so the last rung moves the window off every screen —
+    /// it can't be seen, nothing is clicked (never "Start transcribing"), and
+    /// the host app is left running.
+    private func dismiss(_ window: AXUIElement) -> String {
+        if performNamedCloseAction(on: window) { return "dismissed via named action" }
+        if pressCloseButton(in: window, depth: 0) { return "dismissed via close button" }
+        if AXUIElementPerformAction(window, kAXCancelAction as CFString) == .success {
+            return "dismissed via AXCancel"
+        }
+        if moveOffScreen(window) { return "moved off-screen" }
+        return "matched but not dismissable"
+    }
+
+    /// Parks the overlay far outside the union of all screens. Electron windows
+    /// are real NSWindows, so AXPosition is settable even when no close action
+    /// exists. Re-applied by the next sweep if the host moves it back.
+    private func isOffScreen(_ window: AXUIElement) -> Bool {
+        var positionRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+              let value = positionRef, CFGetTypeID(value) == AXValueGetTypeID() else { return false }
+        var point = CGPoint.zero
+        AXValueGetValue(value as! AXValue, .cgPoint, &point)
+        return point.x < -20_000
+    }
+
+    private func moveOffScreen(_ window: AXUIElement) -> Bool {
+        var offscreen = CGPoint(x: -30_000, y: -30_000)
+        guard let value = AXValueCreate(.cgPoint, &offscreen) else { return false }
+        return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value) == .success
+    }
+
+    /// Diagnostics only — the overlay's full element tree, so a proper close
+    /// affordance can be found without needing another live meeting.
+    private func dumpSubtree(_ element: AXUIElement, depth: Int, path: String) {
+        guard depth < 12 else { return }
+        let role = copyString(element, kAXRoleAttribute as String) ?? "?"
+        let title = copyString(element, kAXTitleAttribute as String) ?? ""
+        let desc = copyString(element, kAXDescriptionAttribute as String) ?? ""
+        let value = copyString(element, kAXValueAttribute as String) ?? ""
+        var actionsRef: CFArray?
+        var actions: [String] = []
+        if AXUIElementCopyActionNames(element, &actionsRef) == .success, let list = actionsRef as? [String] {
+            actions = list
+        }
+        if !title.isEmpty || !desc.isEmpty || !value.isEmpty || !actions.isEmpty {
+            Self.logger.notice("OVERLAYTREE \(path, privacy: .public) role=\(role, privacy: .public) actions=\(actions.joined(separator: "|"), privacy: .public) title=\(title, privacy: .public) desc=\(desc, privacy: .public) value=\(String(value.prefix(40)), privacy: .public)")
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for (i, child) in children.enumerated() {
+            dumpSubtree(child, depth: depth + 1, path: path + "/\(i)")
+        }
     }
 
     private func performNamedCloseAction(on element: AXUIElement) -> Bool {
