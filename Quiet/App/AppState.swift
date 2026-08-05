@@ -227,6 +227,7 @@ final class AppState: ObservableObject {
     }
 
     func startMonitoring() {
+        logger.notice("startMonitoring paused=\(self.isPaused) dismissBanners=\(self.dismissBannersEnabled) quitCompetitors=\(self.quitCompetitorsEnabled)")
         // Nothing arms while paused — resumeNow() calls back in when the hour is up.
         guard !isPaused else { return }
         detectorTask?.cancel()
@@ -370,6 +371,7 @@ final class AppState: ObservableObject {
         if dismissBannersEnabled {
             notificationWatcher.start()
             hostOverlayWatcher.start()
+            hostOverlayWatcher.setMeetingActive(true)
         }
 
         // Persistent notch island for the meeting — not a 5s toast.
@@ -552,6 +554,7 @@ final class AppState: ObservableObject {
         guard isMeetingActive else { return }
         isMeetingActive = false
         isCapturing = false
+        hostOverlayWatcher.setMeetingActive(false)
         quietBanner.hide()
 
         // A pipeline still starting up must not finish arming after the end.

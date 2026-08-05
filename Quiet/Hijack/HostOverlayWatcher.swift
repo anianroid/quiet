@@ -1,130 +1,67 @@
 import AppKit
 import ApplicationServices
+import CoreGraphics
 import Foundation
 import os.log
 
-/// Layer C — dismiss the floating "Start Notetaker" pills that host apps draw
-/// themselves (Notion's meeting-detect overlay, Notion Calendar's notetaker
-/// pill). These are app windows, not notifications, so Layer B never sees them.
+/// Layer C — suppress the floating "Start Notetaker" pills apps draw
+/// themselves. These are ordinary app windows, not notifications, so Layer B
+/// never sees them.
 ///
-/// Deliberately narrow: only the listed host apps, only small floating panels
-/// (never a main window), and only when the panel's text is unambiguous
-/// notetaker-prompt copy. The host app itself is never quit.
+/// **No app list.** A window earns suppression by behaving like a notetaker
+/// prompt — small, floating, and carrying unambiguous prompt copy — whoever
+/// draws it. That matters because the offenders aren't only notetakers: a
+/// dictation app or a calendar can grow a "Start Notetaker" button overnight,
+/// and Quiet must handle it without shipping a new build.
+///
+/// The host app is never quit and no button that could *start* anything is
+/// ever pressed — only close affordances, else the window is parked off-screen.
 @MainActor
 final class HostOverlayWatcher {
     private static let logger = Logger(subsystem: "notes.quiet.app", category: "HostOverlayWatcher")
 
-    /// Hosts known to draw their own meeting-detect overlays.
-    private static let watchedBundleIds: Set<String> = [
-        "notion.id",           // Notion — "Start AI Meeting Note / Start transcribing"
-        "com.cron.electron"    // Notion Calendar — "Meeting detected / Start Notetaker"
-    ]
+    /// Electron does not reliably post AXWindowCreated for its notification
+    /// panels, so the poll is what actually catches a pill. During a meeting it
+    /// runs fast enough to beat the fade-in.
+    private static let idleInterval: TimeInterval = 1.0
+    private static let meetingInterval: TimeInterval = 0.1
 
-    /// Overlay pills are short; anything taller is a real window we never touch.
+    /// Prompt pills are small. Anything taller is a real window we never touch.
     private static let maxOverlayHeight: CGFloat = 260
-
-    /// Unambiguous prompt copy drawn on the overlays themselves.
-    private static let overlayPhrases: [String] = [
-        "Start AI Meeting Note",
-        "Start transcribing",
-        "Start Notetaker",
-        "Notetaker is ready",
-        "Note-taking is available",
-        "Meeting detected"
-    ]
+    /// Below this, a window is a shadow/tooltip artifact rather than a prompt.
+    private static let minOverlayHeight: CGFloat = 24
 
     private var timer: Timer?
     private var isSweeping = false
-    /// Window-created observers per host pid — the instant-suppression path.
-    /// The poll timer stays as the safety net for windows the observer misses.
-    private var observers: [pid_t: AXObserver] = [:]
+    private var interval: TimeInterval = HostOverlayWatcher.idleInterval
+    /// Apps told to expose their web content, so the switch is flipped once each.
+    private var manualAccessibilityEnabled: Set<pid_t> = []
 
     func start() {
         stop()
-        Self.logger.notice("HostOverlayWatcher.start axTrusted=\(AXIsProcessTrusted())")
+        Self.logger.notice("HostOverlayWatcher.start axTrusted=\(AXIsProcessTrusted()) interval=\(self.interval)")
         guard AXIsProcessTrusted() else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.sweep()
             }
         }
         sweep()
-        if UserDefaults.standard.bool(forKey: "quiet.axProbe") {
-            probePositionSettability()
-        }
-    }
-
-    /// Diagnostics only — writes each watched host's first window back to the
-    /// position it already occupies. A no-op visually; proves whether
-    /// AXPosition is settable on that app before relying on it to hide a pill.
-    func probePositionSettability() {
-        for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier, Self.watchedBundleIds.contains(bid) else { continue }
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            var windowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let windows = windowsRef as? [AXUIElement], let window = windows.first else { continue }
-
-            var positionRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
-                  let current = positionRef, CFGetTypeID(current) == AXValueGetTypeID() else {
-                Self.logger.notice("AXPROBE \(bid, privacy: .public): position unreadable")
-                continue
-            }
-            var point = CGPoint.zero
-            AXValueGetValue(current as! AXValue, .cgPoint, &point)
-            var same = point
-            guard let value = AXValueCreate(.cgPoint, &same) else { continue }
-            let result = AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
-            Self.logger.notice("AXPROBE \(bid, privacy: .public): settable=\(result == .success) status=\(result.rawValue) at=(\(Int(point.x)),\(Int(point.y)))")
-        }
     }
 
     func stop() {
         timer?.invalidate()
         timer = nil
-        for observer in observers.values {
-            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        }
-        observers.removeAll()
     }
 
-    /// Dismissal-on-poll means a pill is visible for up to a second. Observing
-    /// AXWindowCreated fires while the overlay is still fading in, so it never
-    /// visually lands.
-    private func ensureObserver(for app: NSRunningApplication) {
-        let pid = app.processIdentifier
-        guard observers[pid] == nil else { return }
-
-        let callback: AXObserverCallback = { _, _, _, refcon in
-            guard let refcon else { return }
-            let watcher = Unmanaged<HostOverlayWatcher>.fromOpaque(refcon).takeUnretainedValue()
-            // The observer's run loop source lives on the main run loop.
-            MainActor.assumeIsolated {
-                watcher.sweep()
-            }
-        }
-
-        var observer: AXObserver?
-        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
-        let appElement = AXUIElementCreateApplication(pid)
-        AXObserverAddNotification(
-            observer,
-            appElement,
-            kAXWindowCreatedNotification as CFString,
-            Unmanaged.passUnretained(self).toOpaque()
-        )
-        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-        observers[pid] = observer
-    }
-
-    /// Observers die with their process — drop entries for quit hosts so a
-    /// relaunched app gets a fresh observer on its new pid.
-    private func pruneDeadObservers(livePIDs: Set<pid_t>) {
-        for pid in observers.keys where !livePIDs.contains(pid) {
-            if let observer = observers.removeValue(forKey: pid) {
-                CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
-            }
+    /// Meeting start is exactly when hosts pop their pills — poll hard for the
+    /// duration so a pill is hidden within ~100ms instead of up to a second.
+    func setMeetingActive(_ active: Bool) {
+        let next = active ? Self.meetingInterval : Self.idleInterval
+        guard next != interval else { return }
+        interval = next
+        if timer != nil {
+            start()
         }
     }
 
@@ -133,75 +70,115 @@ final class HostOverlayWatcher {
         isSweeping = true
         defer { isSweeping = false }
 
-        let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
-        var livePIDs: Set<pid_t> = []
-        for app in NSWorkspace.shared.runningApplications {
-            guard let bid = app.bundleIdentifier, Self.watchedBundleIds.contains(bid) else { continue }
-            livePIDs.insert(app.processIdentifier)
-            ensureObserver(for: app)
-            let appElement = AXUIElementCreateApplication(app.processIdentifier)
-            // Electron only emits its web-content AX tree when an assistive
-            // client asks for it — without this the overlay windows are blank.
-            AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            var windowsRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-                  let windows = windowsRef as? [AXUIElement] else {
-                if debug {
-                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public): no AX windows")
-                }
-                continue
-            }
-
-            for window in windows {
-                let sized = isOverlaySized(window)
-                // A pill already parked off-screen stays handled — re-moving it
-                // every tick would spam the log with no visible effect.
-                guard sized, !isOffScreen(window) else { continue }
-                var blob = ""
-                collectText(window, into: &blob, depth: 0)
-                if debug {
-                    let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
-                    Self.logger.notice("OVERLAYDUMP \(bid, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) text=\(String(blob.prefix(200)), privacy: .public)")
-                }
-                guard !blob.isEmpty,
-                      Self.overlayPhrases.contains(where: { blob.localizedCaseInsensitiveContains($0) }),
-                      !blob.localizedCaseInsensitiveContains("Quiet")
-                else { continue }
-
-                if debug {
-                    dumpSubtree(window, depth: 0, path: bid)
-                }
-                let strategy = dismiss(window)
-                Self.logger.notice("Host overlay (\(app.localizedName ?? bid, privacy: .public)) \(strategy, privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
-            }
+        // CoreGraphics narrows ~60 running apps to the handful owning a small
+        // floating window — one cheap call instead of AX round-trips per app.
+        for pid in candidatePIDs() {
+            inspect(pid: pid)
         }
-        pruneDeadObservers(livePIDs: livePIDs)
     }
 
-    private func windowSizeDescription(_ window: AXUIElement) -> String {
-        var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
-              let value = sizeRef, CFGetTypeID(value) == AXValueGetTypeID() else { return "?" }
-        var size = CGSize.zero
-        AXValueGetValue(value as! AXValue, .cgSize, &size)
-        return "\(Int(size.width))x\(Int(size.height))"
+    /// PIDs owning an on-screen window small enough to be a prompt pill.
+    private func candidatePIDs() -> Set<pid_t> {
+        let options = CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])
+        guard let info = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
+            return []
+        }
+
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        var pids: Set<pid_t> = []
+        for window in info {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID else { continue }
+            guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let height = bounds["Height"] as? CGFloat,
+                  height >= Self.minOverlayHeight, height <= Self.maxOverlayHeight else { continue }
+            pids.insert(pid)
+        }
+        return pids
+    }
+
+    private func inspect(pid: pid_t) {
+        guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+        let bundleID = app.bundleIdentifier ?? ""
+        // Apple's own surfaces are Layer B's job (Notification Center) or system
+        // UI we must never touch.
+        guard !bundleID.hasPrefix("com.apple."), bundleID != Bundle.main.bundleIdentifier else { return }
+
+        let appElement = AXUIElementCreateApplication(pid)
+        if !manualAccessibilityEnabled.contains(pid) {
+            // Electron only emits its web-content AX tree when an assistive
+            // client asks; without this the pill's text reads as empty.
+            AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+            manualAccessibilityEnabled.insert(pid)
+        }
+
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return }
+
+        let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
+        for window in windows {
+            guard isOverlaySized(window), !isOffScreen(window) else { continue }
+
+            var blob = ""
+            collectText(window, into: &blob, depth: 0)
+            if debug {
+                let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
+                Self.logger.notice("OVERLAYDUMP \(bundleID, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) text=\(String(blob.prefix(200)), privacy: .public)")
+            }
+
+            // Strong copy only — never the ambiguous "Meeting notes" wording a
+            // user's own reminder might carry.
+            guard !blob.isEmpty,
+                  NotetakerPhrases.containsStrong(blob),
+                  !blob.localizedCaseInsensitiveContains("Quiet")
+            else { continue }
+
+            if debug {
+                dumpSubtree(window, depth: 0, path: bundleID)
+            }
+            let strategy = dismiss(window)
+            Self.logger.notice("Overlay (\(app.localizedName ?? bundleID, privacy: .public)) \(strategy, privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
+        }
     }
 
     private func isOverlaySized(_ window: AXUIElement) -> Bool {
+        guard let size = windowSize(window) else { return false }
+        return size.height >= Self.minOverlayHeight && size.height <= Self.maxOverlayHeight
+    }
+
+    private func windowSize(_ window: AXUIElement) -> CGSize? {
         var sizeRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success else {
-            return false
-        }
+        guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+              let value = sizeRef, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
         var size = CGSize.zero
-        guard let value = sizeRef, CFGetTypeID(value) == AXValueGetTypeID(),
-              AXValueGetValue(value as! AXValue, .cgSize, &size) else { return false }
-        return size.height > 0 && size.height < Self.maxOverlayHeight
+        guard AXValueGetValue(value as! AXValue, .cgSize, &size) else { return nil }
+        return size
+    }
+
+    private func windowSizeDescription(_ window: AXUIElement) -> String {
+        guard let size = windowSize(window) else { return "?" }
+        return "\(Int(size.width))x\(Int(size.height))"
+    }
+
+    /// A pill already parked stays handled — re-moving it every tick would spam
+    /// the log to no visible effect.
+    private func isOffScreen(_ window: AXUIElement) -> Bool {
+        guard let point = windowPosition(window) else { return false }
+        return point.x < -20_000
+    }
+
+    private func windowPosition(_ window: AXUIElement) -> CGPoint? {
+        var positionRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
+              let value = positionRef, CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
+        var point = CGPoint.zero
+        guard AXValueGetValue(value as! AXValue, .cgPoint, &point) else { return nil }
+        return point
     }
 
     /// Ladder from least to most forceful. Notion's pill exposes no close
     /// affordance at all, so the last rung moves the window off every screen —
-    /// it can't be seen, nothing is clicked (never "Start transcribing"), and
-    /// the host app is left running.
+    /// it can't be seen, nothing is clicked, and the host app keeps running.
     private func dismiss(_ window: AXUIElement) -> String {
         if performNamedCloseAction(on: window) { return "dismissed via named action" }
         if pressCloseButton(in: window, depth: 0) { return "dismissed via close button" }
@@ -212,46 +189,10 @@ final class HostOverlayWatcher {
         return "matched but not dismissable"
     }
 
-    /// Parks the overlay far outside the union of all screens. Electron windows
-    /// are real NSWindows, so AXPosition is settable even when no close action
-    /// exists. Re-applied by the next sweep if the host moves it back.
-    private func isOffScreen(_ window: AXUIElement) -> Bool {
-        var positionRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionRef) == .success,
-              let value = positionRef, CFGetTypeID(value) == AXValueGetTypeID() else { return false }
-        var point = CGPoint.zero
-        AXValueGetValue(value as! AXValue, .cgPoint, &point)
-        return point.x < -20_000
-    }
-
     private func moveOffScreen(_ window: AXUIElement) -> Bool {
         var offscreen = CGPoint(x: -30_000, y: -30_000)
         guard let value = AXValueCreate(.cgPoint, &offscreen) else { return false }
         return AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value) == .success
-    }
-
-    /// Diagnostics only — the overlay's full element tree, so a proper close
-    /// affordance can be found without needing another live meeting.
-    private func dumpSubtree(_ element: AXUIElement, depth: Int, path: String) {
-        guard depth < 12 else { return }
-        let role = copyString(element, kAXRoleAttribute as String) ?? "?"
-        let title = copyString(element, kAXTitleAttribute as String) ?? ""
-        let desc = copyString(element, kAXDescriptionAttribute as String) ?? ""
-        let value = copyString(element, kAXValueAttribute as String) ?? ""
-        var actionsRef: CFArray?
-        var actions: [String] = []
-        if AXUIElementCopyActionNames(element, &actionsRef) == .success, let list = actionsRef as? [String] {
-            actions = list
-        }
-        if !title.isEmpty || !desc.isEmpty || !value.isEmpty || !actions.isEmpty {
-            Self.logger.notice("OVERLAYTREE \(path, privacy: .public) role=\(role, privacy: .public) actions=\(actions.joined(separator: "|"), privacy: .public) title=\(title, privacy: .public) desc=\(desc, privacy: .public) value=\(String(value.prefix(40)), privacy: .public)")
-        }
-        var childrenRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
-              let children = childrenRef as? [AXUIElement] else { return }
-        for (i, child) in children.enumerated() {
-            dumpSubtree(child, depth: depth + 1, path: path + "/\(i)")
-        }
     }
 
     private func performNamedCloseAction(on element: AXUIElement) -> Bool {
@@ -266,6 +207,8 @@ final class HostOverlayWatcher {
         return false
     }
 
+    /// Presses only close/dismiss affordances — never a button that could start
+    /// a recording.
     private func pressCloseButton(in element: AXUIElement, depth: Int) -> Bool {
         guard depth < 14 else { return false }
         var childrenRef: CFTypeRef?
@@ -281,7 +224,7 @@ final class HostOverlayWatcher {
                 ].compactMap { $0 }.joined(separator: " ")
                 if label.localizedCaseInsensitiveContains("close")
                     || label.localizedCaseInsensitiveContains("dismiss")
-                    || label == "×" {
+                    || label == "×" || label == "✕" {
                     if AXUIElementPerformAction(child, kAXPressAction as CFString) == .success {
                         return true
                     }
@@ -293,8 +236,8 @@ final class HostOverlayWatcher {
     }
 
     private func collectText(_ element: AXUIElement, into blob: inout String, depth: Int) {
-        // Electron AX trees nest web content 10+ levels deep — depth must
-        // reach through AXWebArea wrappers to the overlay's actual labels.
+        // Electron nests web content deeply — the walk must reach past the
+        // AXWebArea wrappers to the pill's actual labels.
         guard depth < 14, blob.count < 1500 else { return }
         for attribute in [kAXTitleAttribute as String, kAXDescriptionAttribute as String, kAXValueAttribute as String] {
             if let text = copyString(element, attribute), !text.isEmpty {
@@ -306,6 +249,29 @@ final class HostOverlayWatcher {
               let children = childrenRef as? [AXUIElement] else { return }
         for child in children {
             collectText(child, into: &blob, depth: depth + 1)
+        }
+    }
+
+    /// Diagnostics only — the matched overlay's element tree, so a cleaner close
+    /// affordance can be found without needing another live meeting.
+    private func dumpSubtree(_ element: AXUIElement, depth: Int, path: String) {
+        guard depth < 12 else { return }
+        let role = copyString(element, kAXRoleAttribute as String) ?? "?"
+        let title = copyString(element, kAXTitleAttribute as String) ?? ""
+        let desc = copyString(element, kAXDescriptionAttribute as String) ?? ""
+        var actionsRef: CFArray?
+        var actions: [String] = []
+        if AXUIElementCopyActionNames(element, &actionsRef) == .success, let list = actionsRef as? [String] {
+            actions = list
+        }
+        if !title.isEmpty || !desc.isEmpty || !actions.isEmpty {
+            Self.logger.notice("OVERLAYTREE \(path, privacy: .public) role=\(role, privacy: .public) actions=\(actions.joined(separator: "|"), privacy: .public) title=\(title, privacy: .public) desc=\(desc, privacy: .public)")
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for (i, child) in children.enumerated() {
+            dumpSubtree(child, depth: depth + 1, path: path + "/\(i)")
         }
     }
 

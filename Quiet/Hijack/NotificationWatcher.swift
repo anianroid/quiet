@@ -23,26 +23,6 @@ final class NotificationWatcher {
     /// plus a builtin seed so an empty catalog still covers the big names.
     private let vendorMarkers: [String]
 
-    /// Copy that only ever appears in a notetaker prompt — dismissible on its
-    /// own. Zoom's web banner is literally just "Note-taking is available" +
-    /// "Chrome", with no vendor word anywhere in the text.
-    private static let strongPhrases: [String] = [
-        "Note-taking is available",
-        "Start Notetaker",
-        "Start note taker",
-        "Notetaker is ready",
-        "Start taking notes",
-        "Take notes with",
-        "Meeting detected"
-    ]
-
-    /// Ambiguous copy a user's own reminder could contain — a vendor marker
-    /// must also be present in the banner text before we dismiss.
-    private static let weakPhrases: [String] = [
-        "Take notes",
-        "Meeting notes"
-    ]
-
     /// Tokens the generic phrases are made of (plus filler like "Now" that
     /// competitors put in banner titles). A catalog string whose tokens are
     /// all generic carries no vendor identity and is discarded.
@@ -137,9 +117,7 @@ final class NotificationWatcher {
             guard isNotificationSurface else { continue }
             ensureObserver(for: app)
             let element = AXUIElementCreateApplication(app.processIdentifier)
-            if UserDefaults.standard.bool(forKey: "quiet.axDump") {
-                dumpTree(element, depth: 0, path: bid.isEmpty ? name : bid)
-            }
+            let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
             // Banners live in AXSystemDialog windows — walking only those skips
             // the widget stacks and the app's entire menu tree every sweep.
             var windowsRef: CFTypeRef?
@@ -148,6 +126,11 @@ final class NotificationWatcher {
                 for window in windows {
                     let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
                     guard subrole == "AXSystemDialog" else { continue }
+                    // Scoped to the banner: dumping the whole app element walks
+                    // thousands of menu items synchronously and stalls startup.
+                    if debug {
+                        dumpTree(window, depth: 0, path: bid.isEmpty ? name : bid)
+                    }
                     dismissMatchingBanners(in: window, depth: 0)
                 }
             } else {
@@ -206,12 +189,8 @@ final class NotificationWatcher {
     /// weak phrase together with a vendor marker. "Meeting notes" alone is
     /// never dismissed.
     func isNotetakerPrompt(_ text: String) -> Bool {
-        if Self.strongPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) {
-            return true
-        }
-        guard Self.weakPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
-            return false
-        }
+        if NotetakerPhrases.containsStrong(text) { return true }
+        guard NotetakerPhrases.containsWeak(text) else { return false }
         return NameTokenMatcher.name(text, matchesAnyOf: vendorMarkers)
     }
 
