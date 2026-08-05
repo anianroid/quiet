@@ -106,53 +106,27 @@ struct ProcessController: Sendable {
         "GranolaMacWebcam"
     ]
 
+    /// PIDs already judged harmless. Reading `bundleIdentifier`, `localizedName`
+    /// and `bundleURL` costs a LaunchServices round trip each, and the watchdog
+    /// re-runs several times a second over ~150 processes — so each pid is
+    /// judged exactly once. A pid's identity never changes, so the verdict
+    /// cannot go stale; entries are dropped when the process exits.
+    @MainActor private static var benignPIDs: Set<pid_t> = []
+
     @MainActor
     func suspendCompetitors(from installed: [InstalledCompetitor]) -> [HijackAction] {
         var actions: [HijackAction] = []
         let running = NSWorkspace.shared.runningApplications
-        var seenPIDs = Set<pid_t>()
+        Self.benignPIDs.formIntersection(Set(running.map(\.processIdentifier)))
 
-        // Pass 1: anything whose bundle id is in the notetaker family.
         for app in running {
-            guard let bid = app.bundleIdentifier else { continue }
-            guard Self.competitorBundlePrefixes.contains(where: { bid.hasPrefix($0) || bid == $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) })
-                    || catalog.entries.contains(where: { $0.bundleIds.contains(bid) && $0.policy == .suspendDuringMeeting })
-            else { continue }
-            guard !Self.protectedBundleIds.contains(bid) else { continue }
-            guard !(app.localizedName.map { isProtectedName($0) } ?? false) else { continue }
-
-            let label = catalog.entries.first(where: { $0.bundleIds.contains(bid) })?.name
-                ?? app.localizedName
-                ?? bid
-            let ok = terminate(app, label: label)
-            seenPIDs.insert(app.processIdentifier)
-            actions.append(HijackAction(competitorName: label, action: ok ? "force_quit" : "terminate_failed", at: Date()))
-        }
-
-        // Pass 2: name-based helpers (Granola Helper (Renderer), etc.)
-        for entry in catalog.entries where entry.policy == .suspendDuringMeeting {
-            for app in running {
-                guard !seenPIDs.contains(app.processIdentifier) else { continue }
-                guard shouldTerminateByName(app: app, entry: entry) else { continue }
-                let ok = terminate(app, label: entry.name)
-                seenPIDs.insert(app.processIdentifier)
-                if !actions.contains(where: { $0.competitorName == entry.name && $0.action == "force_quit" }) {
-                    actions.append(HijackAction(competitorName: entry.name, action: ok ? "force_quit" : "terminate_failed", at: Date()))
-                }
+            // processIdentifier is a local read; everything below is not.
+            guard !Self.benignPIDs.contains(app.processIdentifier) else { continue }
+            guard let label = competitorLabel(for: app) else {
+                Self.benignPIDs.insert(app.processIdentifier)
+                continue
             }
-        }
-
-        // Pass 3: path-based orphans Electron may leave without a matching bundle id.
-        for app in running {
-            guard !seenPIDs.contains(app.processIdentifier) else { continue }
-            guard let url = app.bundleURL?.path ?? app.executableURL?.path else { continue }
-            guard Self.competitorPathFragments.contains(where: { url.contains($0) }) else { continue }
-            if let bid = app.bundleIdentifier, Self.protectedBundleIds.contains(bid) { continue }
-            if let name = app.localizedName, isProtectedName(name) { continue }
-
-            let label = app.localizedName ?? url
             let ok = terminate(app, label: label)
-            seenPIDs.insert(app.processIdentifier)
             actions.append(HijackAction(competitorName: label, action: ok ? "force_quit" : "terminate_failed", at: Date()))
         }
 
@@ -170,6 +144,51 @@ struct ProcessController: Sendable {
             Self.logger.error("Failed to terminate \(label, privacy: .public) (pid \(pid))")
         }
         return ok
+    }
+
+    /// The display name to log a kill under, or nil when the app must be left
+    /// alone. Combines what used to be three separate passes — bundle-id family,
+    /// catalog name hints, and Electron path fragments — into one judgement per
+    /// process, so each app's identity is read a single time.
+    private func competitorLabel(for app: NSRunningApplication) -> String? {
+        let bundleID = app.bundleIdentifier
+        let name = app.localizedName
+
+        if let bundleID, Self.protectedBundleIds.contains(bundleID) { return nil }
+        if let name, isProtectedName(name) { return nil }
+        if let bundleID, bundleID.hasPrefix("com.apple.") { return nil }
+
+        // Bundle id belongs to a known notetaker family, or to a catalog entry
+        // marked for suspension.
+        if let bundleID {
+            let isFamily = Self.competitorBundlePrefixes.contains {
+                bundleID.hasPrefix($0) || bundleID == $0.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            }
+            let catalogEntry = catalog.entries.first {
+                $0.bundleIds.contains(bundleID) && $0.policy == .suspendDuringMeeting
+            }
+            if isFamily || catalogEntry != nil {
+                return catalogEntry?.name ?? name ?? bundleID
+            }
+        }
+
+        // Helper processes named after a catalog entry ("Granola Helper (GPU)").
+        if let name {
+            for entry in catalog.entries where entry.policy == .suspendDuringMeeting {
+                let hints = entry.helperProcessNames + entry.appNameHints
+                if NameTokenMatcher.name(name, matchesAnyOf: hints) {
+                    return entry.name
+                }
+            }
+        }
+
+        // Orphans Electron leaves without a matching bundle id.
+        if let path = app.bundleURL?.path ?? app.executableURL?.path,
+           Self.competitorPathFragments.contains(where: { path.contains($0) }) {
+            return name ?? path
+        }
+
+        return nil
     }
 
     /// Electron notetakers ignore soft quit. Soft-ask once, then forceTerminate + SIGKILL.

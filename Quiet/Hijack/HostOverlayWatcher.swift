@@ -26,12 +26,12 @@ final class HostOverlayWatcher {
     /// panels, so polling is what actually catches a pill. Pills land in the
     /// seconds right after a meeting is detected, so that stretch is swept at
     /// near-frame rate — the pill is gone before it finishes fading in.
+    /// Apps pop pills whenever they notice the call, not only at the start —
+    /// Notion's lands ~30s in — so the fast cadence covers the whole meeting.
+    /// Steady-state ticks cost one CoreGraphics call: when the set of small
+    /// windows is unchanged there is no Accessibility traffic at all.
     private static let idleInterval: TimeInterval = 1.0
-    private static let meetingInterval: TimeInterval = 0.25
-    private static let burstInterval: TimeInterval = 0.03
-    /// How long the burst lasts after a meeting starts, or after any app is
-    /// caught popping a pill (they often come in waves).
-    private static let burstDuration: TimeInterval = 30
+    private static let meetingInterval: TimeInterval = 0.03
 
     /// Prompt pills are small. Anything taller is a real window we never touch.
     private static let maxOverlayHeight: CGFloat = 260
@@ -42,7 +42,17 @@ final class HostOverlayWatcher {
     private var isSweeping = false
     private var interval: TimeInterval = HostOverlayWatcher.idleInterval
     private var isMeetingActive = false
-    private var burstUntil: Date?
+    /// Window set from the previous sweep — an unchanged set means nothing new
+    /// can need suppressing, so the expensive half of the sweep is skipped.
+    private var lastCandidateIDs: Set<CGWindowID> = []
+
+    /// Process identity is fixed for the life of a pid, and looking it up is a
+    /// LaunchServices round trip — cache it rather than paying per tick.
+    private struct AppIdentity {
+        let bundleID: String
+        let name: String
+    }
+    private var appIdentities: [pid_t: AppIdentity] = [:]
     /// Apps told to expose their web content, so the switch is flipped once each.
     private var manualAccessibilityEnabled: Set<pid_t> = []
     /// Window-created observers, so apps that do post the event are handled
@@ -107,11 +117,8 @@ final class HostOverlayWatcher {
     func setMeetingActive(_ active: Bool) {
         isMeetingActive = active
         if active {
-            burstUntil = Date().addingTimeInterval(Self.burstDuration)
             // Learned offenders get observers armed before their pill exists.
             armObserversForLearnedApps()
-        } else {
-            burstUntil = nil
         }
         retune()
     }
@@ -119,15 +126,7 @@ final class HostOverlayWatcher {
     /// Picks the sweep cadence for the moment and restarts the timer only when
     /// it actually changes.
     private func retune() {
-        let bursting = (burstUntil.map { $0 > Date() }) ?? false
-        let next: TimeInterval
-        if bursting {
-            next = Self.burstInterval
-        } else if isMeetingActive {
-            next = Self.meetingInterval
-        } else {
-            next = Self.idleInterval
-        }
+        let next = isMeetingActive ? Self.meetingInterval : Self.idleInterval
         guard next != interval else { return }
         interval = next
         if timer != nil { start() }
@@ -171,7 +170,6 @@ final class HostOverlayWatcher {
     /// Records an app as a pill-popper the first time one is caught, and extends
     /// the burst — pills tend to arrive in waves from several apps at once.
     private func learn(bundleID: String, pid: pid_t) {
-        burstUntil = Date().addingTimeInterval(Self.burstDuration)
         ensureObserver(for: pid)
         var learned = learnedPillApps
         guard !bundleID.isEmpty, !learned.contains(bundleID) else { return }
@@ -197,16 +195,27 @@ final class HostOverlayWatcher {
         // One cheap CG call narrows ~60 running apps to the few owning a small
         // floating window; only those get AX round-trips.
         let found = candidates()
+        let ids = Set(found.map(\.windowID))
+
+        // Nothing appeared or disappeared since the last tick, and no capture is
+        // in flight — no window can have become a prompt, so skip the AX work.
+        // This is what makes a 30ms cadence affordable for a whole meeting.
+        if ids == lastCandidateIDs, ocrPending.isEmpty, !hasActionableVerdict(in: ids) {
+            return
+        }
+        lastCandidateIDs = ids
+
         for candidate in found {
             inspect(candidate)
         }
-        pruneVerdicts(seen: Set(found.map(\.windowID)))
+        pruneVerdicts(seen: ids)
+    }
 
-        // Drop out of burst cadence once the wave has passed.
-        if let until = burstUntil, until <= Date() {
-            burstUntil = nil
-            retune()
-        }
+    /// True when a pixel read has come back positive for a window still on
+    /// screen — that verdict lands asynchronously and must be acted on even
+    /// though the window set itself did not change.
+    private func hasActionableVerdict(in ids: Set<CGWindowID>) -> Bool {
+        ids.contains { ocrVerdicts[$0]?.isNotetakerPrompt == true }
     }
 
     private func candidates() -> [Candidate] {
@@ -231,8 +240,17 @@ final class HostOverlayWatcher {
     }
 
     private func inspect(_ candidate: Candidate) {
-        guard let app = NSRunningApplication(processIdentifier: candidate.pid) else { return }
-        let bundleID = app.bundleIdentifier ?? ""
+        // Looking an app up by pid is a LaunchServices round trip; at a 30ms
+        // cadence that has to happen once per process, not once per tick.
+        let identity: AppIdentity
+        if let cached = appIdentities[candidate.pid] {
+            identity = cached
+        } else {
+            guard let app = NSRunningApplication(processIdentifier: candidate.pid) else { return }
+            identity = AppIdentity(bundleID: app.bundleIdentifier ?? "", name: app.localizedName ?? "")
+            appIdentities[candidate.pid] = identity
+        }
+        let bundleID = identity.bundleID
         // Apple's own surfaces are Layer B's job (Notification Center) or system
         // UI we must never touch.
         guard !bundleID.hasPrefix("com.apple."), bundleID != Bundle.main.bundleIdentifier else { return }
@@ -291,7 +309,7 @@ final class HostOverlayWatcher {
         let source = axSaysPrompt ? "ax" : "pixels"
         let strategy = dismiss(window)
         learn(bundleID: bundleID, pid: candidate.pid)
-        Self.logger.notice("Overlay (\(app.localizedName ?? bundleID, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
+        Self.logger.notice("Overlay (\(identity.name.isEmpty ? bundleID : identity.name, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
     }
 
     /// Captures and reads a candidate's pixels once, caching the verdict. The

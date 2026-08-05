@@ -82,13 +82,20 @@ actor MeetingDetector {
 
     private func browserMeetingSignal() -> String? {
         // Pass 1: CG window list (works when Screen Recording is granted)
-        for (owner, title) in cgWindowTitles() {
+        let cgTitles = cgWindowTitles()
+        for (owner, title) in cgTitles {
             if let label = classifyMeetingWindow(owner: owner, title: title) {
                 return label
             }
         }
 
-        // Pass 2: Accessibility titles on browser processes (works with Accessibility)
+        // Pass 2 is a fallback for when window titles are invisible — without
+        // Screen Recording, CG reports every title as empty. Walking browser AX
+        // trees costs more than everything else Quiet does combined, so it only
+        // runs when pass 1 genuinely could not see, not merely when it found no
+        // meeting.
+        guard cgTitles.isEmpty else { return nil }
+
         for (owner, title) in axBrowserWindowTitles() {
             if let label = classifyMeetingWindow(owner: owner, title: title) {
                 return label
