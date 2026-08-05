@@ -172,6 +172,18 @@ final class AppState: ObservableObject {
         lastScanAt = Date()
         recoverOrphanedTranscripts()
 
+        // Debug only: hold the island in its meeting/recording state so the
+        // design can be reviewed without joining a call.
+        // `defaults write notes.quiet.app quiet.debugIslandState -string recording`
+        if let debugState = UserDefaults.standard.string(forKey: "quiet.debugIslandState") {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+                self?.quietBanner.showMeetingStatus(
+                    message: "Quiet · Meeting",
+                    capturing: debugState == "recording"
+                )
+            }
+        }
+
         if hasCompletedOnboarding {
             startMonitoring()
         } else {

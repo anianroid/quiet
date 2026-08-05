@@ -30,7 +30,12 @@ final class HostOverlayWatcher {
     /// Notion's lands ~30s in — so the fast cadence covers the whole meeting.
     /// Steady-state ticks cost one CoreGraphics call: when the set of small
     /// windows is unchanged there is no Accessibility traffic at all.
-    private static let idleInterval: TimeInterval = 1.0
+    /// Apps often notice a call before Quiet does — Notion's pill has landed a
+    /// full second before meeting detection fired — so the idle cadence has to
+    /// be fast enough to catch a pill that arrives *first*, not only one that
+    /// arrives after Quiet is armed for a meeting. Both cadences are affordable
+    /// because an unchanged window set costs a single CoreGraphics call.
+    private static let idleInterval: TimeInterval = 0.1
     private static let meetingInterval: TimeInterval = 0.03
 
     /// Prompt pills are small. Anything taller is a real window we never touch.
@@ -337,12 +342,16 @@ final class HostOverlayWatcher {
                 }
                 return
             }
+            let isPrompt = NotetakerPhrases.containsStrong(text)
+                && !text.localizedCaseInsensitiveContains("Quiet")
             self.ocrVerdicts[windowID] = OCRVerdict(
-                isNotetakerPrompt: NotetakerPhrases.containsStrong(text)
-                    && !text.localizedCaseInsensitiveContains("Quiet"),
+                isNotetakerPrompt: isPrompt,
                 checkedAt: Date(),
                 text: text
             )
+            // Logged either way: a prompt Quiet read but judged benign is the
+            // failure mode that is otherwise invisible in the field.
+            Self.logger.notice("Pixel read \(isPrompt ? "MATCH" : "no-match", privacy: .public) window \(windowID): \(String(text.prefix(140)), privacy: .public)")
         }
     }
 

@@ -219,8 +219,28 @@ final class IslandModel: ObservableObject {
 }
 
 enum IslandMetrics {
-    static let panelWidth: CGFloat = 480
-    static let panelHeight: CGFloat = 150
+    static let panelWidth: CGFloat = 620
+    static let panelHeight: CGFloat = 170
+}
+
+/// The physical notch, so the island can wrap it instead of hanging below it.
+/// `auxiliaryTopLeftArea`/`auxiliaryTopRightArea` are the menu-bar strips either
+/// side of the notch; what they don't cover is the notch itself.
+struct NotchGeometry {
+    let width: CGFloat
+    let height: CGFloat
+    var hasNotch: Bool { width > 0 && height > 0 }
+
+    static var current: NotchGeometry {
+        guard let screen = NSScreen.main,
+              let left = screen.auxiliaryTopLeftArea,
+              let right = screen.auxiliaryTopRightArea else {
+            return NotchGeometry(width: 0, height: 0)
+        }
+        let width = screen.frame.width - left.width - right.width
+        guard width > 1 else { return NotchGeometry(width: 0, height: 0) }
+        return NotchGeometry(width: width, height: screen.safeAreaInsets.top)
+    }
 }
 
 // MARK: - Root view
@@ -239,82 +259,153 @@ struct IslandRootView: View {
     }
 
     var body: some View {
-        let topInset = NSScreen.main?.safeAreaInsets.top ?? 0
-        let hasNotch = topInset > 0
+        let notch = NotchGeometry.current
 
         ZStack(alignment: .top) {
             if model.state != .hidden {
-                IslandSurface(hasNotch: hasNotch, topInset: topInset, state: model.state) {
-                    content
-                }
-                .transition(
-                    reduceMotion
-                        ? .opacity
-                        : .scale(scale: 0.4, anchor: .top).combined(with: .opacity)
-                )
+                surface(notch: notch)
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .scale(scale: 0.55, anchor: .top).combined(with: .opacity)
+                    )
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .animation(morph, value: model.state)
     }
 
+    /// Compact states wrap the notch: content sits in the ears either side of
+    /// it, at exactly notch height, so the hardware cutout appears to widen
+    /// rather than gain a tab beneath it. Expanded states grow downward from
+    /// that same surface.
     @ViewBuilder
-    private var content: some View {
+    private func surface(notch: NotchGeometry) -> some View {
         switch model.state {
         case .hidden:
             EmptyView()
-        case .toast(let message):
-            ToastContent(message: message)
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+
         case .meeting(let capturing):
-            MeetingContent(capturing: capturing, startedAt: model.meetingStartedAt)
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            if notch.hasNotch {
+                NotchWrapSurface(notch: notch) {
+                    HStack(spacing: 7) {
+                        StatusDot(recording: capturing)
+                        Text("Quiet")
+                            .font(.system(size: 12, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                    }
+                } trailing: {
+                    HStack(spacing: 7) {
+                        WaveformBars(active: capturing)
+                        if let startedAt = model.meetingStartedAt {
+                            ElapsedTime(since: startedAt)
+                        }
+                    }
+                }
+            } else {
+                ExpandedSurface(notch: notch) {
+                    MeetingContent(capturing: capturing, startedAt: model.meetingStartedAt)
+                }
+            }
+
+        case .toast(let message):
+            ExpandedSurface(notch: notch) {
+                ToastContent(message: message)
+            }
+
         case .keepDiscard(let message, let deadline):
-            KeepDiscardContent(
-                message: message,
-                deadline: deadline,
-                onKeep: { model.onKeep?() },
-                onDiscard: { model.onDiscard?() }
-            )
-            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            ExpandedSurface(notch: notch) {
+                KeepDiscardContent(
+                    message: message,
+                    deadline: deadline,
+                    onKeep: { model.onKeep?() },
+                    onDiscard: { model.onDiscard?() }
+                )
+            }
         }
     }
 }
 
-/// The black surface itself. On notch screens the top edge is square so it
-/// reads as the notch extending; elsewhere it is a floating capsule-ish card.
-/// A faint top highlight catches light the way real hardware glass does.
-private struct IslandSurface<Content: View>: View {
-    let hasNotch: Bool
-    let topInset: CGFloat
-    let state: IslandState
+/// Black surface flush to the top of the display, spanning the notch plus an
+/// ear on each side. Bottom corners are rounded, top corners square, and the
+/// notch column is left empty — the hardware is already black there, so the
+/// result reads as one continuous cutout.
+private struct NotchWrapSurface<Leading: View, Trailing: View>: View {
+    let notch: NotchGeometry
+    @ViewBuilder var leading: Leading
+    @ViewBuilder var trailing: Trailing
+
+    var body: some View {
+        HStack(spacing: 0) {
+            leading
+                .padding(.leading, 14)
+                .padding(.trailing, 10)
+            Color.clear.frame(width: notch.width)
+            trailing
+                .padding(.leading, 10)
+                .padding(.trailing, 14)
+        }
+        .frame(height: notch.height)
+        .background {
+            UnevenRoundedRectangle(
+                bottomLeadingRadius: 14,
+                bottomTrailingRadius: 14,
+                style: .continuous
+            )
+            .fill(.black)
+            .overlay {
+                UnevenRoundedRectangle(
+                    bottomLeadingRadius: 14,
+                    bottomTrailingRadius: 14,
+                    style: .continuous
+                )
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.10)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 0.5
+                )
+            }
+            .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+        }
+        .fixedSize()
+    }
+}
+
+/// Taller states. On a notch display this still starts flush at the top with
+/// square shoulders, so it grows out of the notch rather than floating below.
+private struct ExpandedSurface<Content: View>: View {
+    let notch: NotchGeometry
     @ViewBuilder var content: Content
 
     var body: some View {
+        let radius: CGFloat = notch.hasNotch ? 0 : 16
         content
-            .padding(.horizontal, 16)
-            .padding(.top, hasNotch ? topInset + 4 : 10)
-            .padding(.bottom, 10)
+            .padding(.horizontal, 18)
+            .padding(.top, notch.hasNotch ? notch.height + 6 : 12)
+            .padding(.bottom, 12)
             .background {
                 UnevenRoundedRectangle(
-                    topLeadingRadius: hasNotch ? 0 : 18,
+                    topLeadingRadius: radius,
                     bottomLeadingRadius: 20,
                     bottomTrailingRadius: 20,
-                    topTrailingRadius: hasNotch ? 0 : 18,
+                    topTrailingRadius: radius,
                     style: .continuous
                 )
                 .fill(.black)
                 .overlay {
                     UnevenRoundedRectangle(
-                        topLeadingRadius: hasNotch ? 0 : 18,
+                        topLeadingRadius: radius,
                         bottomLeadingRadius: 20,
                         bottomTrailingRadius: 20,
-                        topTrailingRadius: hasNotch ? 0 : 18,
+                        topTrailingRadius: radius,
                         style: .continuous
                     )
                     .strokeBorder(
                         LinearGradient(
-                            colors: [.white.opacity(0.14), .white.opacity(0.03), .clear],
+                            colors: [.white.opacity(0.12), .white.opacity(0.02), .clear],
                             startPoint: .top,
                             endPoint: .bottom
                         ),
