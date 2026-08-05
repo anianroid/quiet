@@ -23,10 +23,15 @@ final class HostOverlayWatcher {
     nonisolated static let logger = Logger(subsystem: "notes.quiet.app", category: "HostOverlayWatcher")
 
     /// Electron does not reliably post AXWindowCreated for its notification
-    /// panels, so the poll is what actually catches a pill. During a meeting it
-    /// runs fast enough to beat the fade-in.
+    /// panels, so polling is what actually catches a pill. Pills land in the
+    /// seconds right after a meeting is detected, so that stretch is swept at
+    /// near-frame rate — the pill is gone before it finishes fading in.
     private static let idleInterval: TimeInterval = 1.0
-    private static let meetingInterval: TimeInterval = 0.1
+    private static let meetingInterval: TimeInterval = 0.25
+    private static let burstInterval: TimeInterval = 0.03
+    /// How long the burst lasts after a meeting starts, or after any app is
+    /// caught popping a pill (they often come in waves).
+    private static let burstDuration: TimeInterval = 30
 
     /// Prompt pills are small. Anything taller is a real window we never touch.
     private static let maxOverlayHeight: CGFloat = 260
@@ -36,8 +41,22 @@ final class HostOverlayWatcher {
     private var timer: Timer?
     private var isSweeping = false
     private var interval: TimeInterval = HostOverlayWatcher.idleInterval
+    private var isMeetingActive = false
+    private var burstUntil: Date?
     /// Apps told to expose their web content, so the switch is flipped once each.
     private var manualAccessibilityEnabled: Set<pid_t> = []
+    /// Window-created observers, so apps that do post the event are handled
+    /// without waiting for the next tick at all.
+    private var observers: [pid_t: AXObserver] = [:]
+
+    /// Apps observed popping a notetaker pill, learned at runtime and persisted
+    /// — never a shipped list. Whatever a user has installed teaches Quiet on
+    /// first sight, and from then on that app is watched from meeting start.
+    private(set) var learnedPillApps: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: Self.learnedKey) ?? []) }
+        set { UserDefaults.standard.set(Array(newValue).sorted(), forKey: Self.learnedKey) }
+    }
+    private static let learnedKey = "quiet.learnedPillApps"
 
     /// Pixel-read verdicts per window, for apps whose UI is invisible to
     /// Accessibility. Cached so each window costs one capture, re-checked while
@@ -77,17 +96,88 @@ final class HostOverlayWatcher {
     func stop() {
         timer?.invalidate()
         timer = nil
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        observers.removeAll()
     }
 
-    /// Meeting start is exactly when hosts pop their pills — poll hard for the
-    /// duration so a pill is hidden within ~100ms instead of up to a second.
+    /// Meeting start is exactly when apps pop their pills — sweep at frame rate
+    /// through that window so nothing is on screen long enough to register.
     func setMeetingActive(_ active: Bool) {
-        let next = active ? Self.meetingInterval : Self.idleInterval
+        isMeetingActive = active
+        if active {
+            burstUntil = Date().addingTimeInterval(Self.burstDuration)
+            // Learned offenders get observers armed before their pill exists.
+            armObserversForLearnedApps()
+        } else {
+            burstUntil = nil
+        }
+        retune()
+    }
+
+    /// Picks the sweep cadence for the moment and restarts the timer only when
+    /// it actually changes.
+    private func retune() {
+        let bursting = (burstUntil.map { $0 > Date() }) ?? false
+        let next: TimeInterval
+        if bursting {
+            next = Self.burstInterval
+        } else if isMeetingActive {
+            next = Self.meetingInterval
+        } else {
+            next = Self.idleInterval
+        }
         guard next != interval else { return }
         interval = next
-        if timer != nil {
-            start()
+        if timer != nil { start() }
+    }
+
+    /// Registers window-created observers on apps already known to pop pills, so
+    /// the ones that do post the event are handled with no polling latency.
+    private func armObserversForLearnedApps() {
+        let learned = learnedPillApps
+        guard !learned.isEmpty else { return }
+        for app in NSWorkspace.shared.runningApplications {
+            guard let bundleID = app.bundleIdentifier, learned.contains(bundleID) else { continue }
+            ensureObserver(for: app.processIdentifier)
         }
+    }
+
+    private func ensureObserver(for pid: pid_t) {
+        guard observers[pid] == nil else { return }
+
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            let watcher = Unmanaged<HostOverlayWatcher>.fromOpaque(refcon).takeUnretainedValue()
+            // The observer's run loop source lives on the main run loop.
+            MainActor.assumeIsolated {
+                watcher.sweep()
+            }
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+        AXObserverAddNotification(
+            observer,
+            AXUIElementCreateApplication(pid),
+            kAXWindowCreatedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        observers[pid] = observer
+    }
+
+    /// Records an app as a pill-popper the first time one is caught, and extends
+    /// the burst — pills tend to arrive in waves from several apps at once.
+    private func learn(bundleID: String, pid: pid_t) {
+        burstUntil = Date().addingTimeInterval(Self.burstDuration)
+        ensureObserver(for: pid)
+        var learned = learnedPillApps
+        guard !bundleID.isEmpty, !learned.contains(bundleID) else { return }
+        learned.insert(bundleID)
+        learnedPillApps = learned
+        Self.logger.notice("Learned pill app: \(bundleID, privacy: .public) (now watched from meeting start)")
     }
 
     /// An on-screen window small enough to be a prompt pill, as CoreGraphics
@@ -111,6 +201,12 @@ final class HostOverlayWatcher {
             inspect(candidate)
         }
         pruneVerdicts(seen: Set(found.map(\.windowID)))
+
+        // Drop out of burst cadence once the wave has passed.
+        if let until = burstUntil, until <= Date() {
+            burstUntil = nil
+            retune()
+        }
     }
 
     private func candidates() -> [Candidate] {
@@ -194,6 +290,7 @@ final class HostOverlayWatcher {
         let evidence = axSaysPrompt ? String(blob.prefix(120)) : String((verdict?.text ?? "").prefix(120))
         let source = axSaysPrompt ? "ax" : "pixels"
         let strategy = dismiss(window)
+        learn(bundleID: bundleID, pid: candidate.pid)
         Self.logger.notice("Overlay (\(app.localizedName ?? bundleID, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
     }
 
