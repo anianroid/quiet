@@ -1,0 +1,46 @@
+name: Quiet
+options:
+  bundleIdPrefix: notes.quiet
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+  developmentLanguage: en
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    MACOSX_DEPLOYMENT_TARGET: "26.0"
+    ENABLE_HARDENED_RUNTIME: YES
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    DEVELOPMENT_TEAM: 3ST4L4QFU7
+    PRODUCT_BUNDLE_IDENTIFIER: notes.quiet.app
+targets:
+  Quiet:
+    type: application
+    platform: macOS
+    sources:
+      - path: Quiet
+        excludes:
+          - "**/*.md"
+    resources:
+      - path: Quiet/Resources/Competitors.json
+      - path: Quiet/Resources/Assets.xcassets
+    settings:
+      base:
+        PRODUCT_NAME: Quiet
+        PRODUCT_BUNDLE_IDENTIFIER: notes.quiet.app
+        INFOPLIST_FILE: Quiet/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Quiet/Quiet.entitlements
+        COMBINE_HIDPI_IMAGES: YES
+        LD_RUNPATH_SEARCH_PATHS: "@executable_path/../Frameworks"
+        ENABLE_APP_SANDBOX: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "Apple Development"
+        DEVELOPMENT_TEAM: 3ST4L4QFU7
+        INFOPLIST_KEY_LSUIElement: YES
+        GENERATE_INFOPLIST_FILE: NO
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+    entitlements:
+      path: Quiet/Quiet.entitlements

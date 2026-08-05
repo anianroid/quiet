@@ -1,0 +1,122 @@
+[
+  {
+    "id": "otter",
+    "name": "Otter",
+    "bundleIds": ["com.otter.ai", "com.aisense.otter", "ai.otter.desktop", "com.otterai.OtterMac"],
+    "helperProcessNames": ["Otter", "OtterHelper", "OtterAI"],
+    "appNameHints": ["Otter"],
+    "notificationTitlePatterns": ["Meeting detected", "Start Notetaker", "Otter"],
+    "notificationBodyPatterns": ["Start Notetaker", "Take notes", "Otter"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "fireflies",
+    "name": "Fireflies",
+    "bundleIds": ["ai.fireflies.desktop", "com.fireflies.ai", "com.firefliesapp.Fireflies"],
+    "helperProcessNames": ["Fireflies", "Fireflies Helper"],
+    "appNameHints": ["Fireflies"],
+    "notificationTitlePatterns": ["Meeting detected", "Fireflies", "Note-taking is available"],
+    "notificationBodyPatterns": ["Take notes", "Fireflies", "Start Notetaker"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "granola",
+    "name": "Granola",
+    "bundleIds": ["com.granola.app", "com.granola.desktop", "ai.granola.Granola"],
+    "helperProcessNames": ["Granola", "GranolaMacWebcam", "Granola Helper", "Granola Helper (Renderer)", "Granola Helper (GPU)"],
+    "appNameHints": ["Granola"],
+    "notificationTitlePatterns": ["Meeting detected", "Granola", "Now", "Note-taking is available"],
+    "notificationBodyPatterns": ["Take notes", "Granola", "Start Notetaker", "Notetaker"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "fathom",
+    "name": "Fathom",
+    "bundleIds": ["so.fathom.Fathom", "com.fathom.video", "com.fathom.desktop"],
+    "helperProcessNames": ["Fathom", "Fathom Helper"],
+    "appNameHints": ["Fathom"],
+    "notificationTitlePatterns": ["Meeting detected", "Fathom", "Note-taking is available"],
+    "notificationBodyPatterns": ["Take notes", "Fathom", "Start Notetaker"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "read-ai",
+    "name": "Read AI",
+    "bundleIds": ["com.read.ai", "ai.read.desktop"],
+    "helperProcessNames": ["Read AI", "ReadAI"],
+    "appNameHints": ["Read AI"],
+    "notificationTitlePatterns": ["Meeting detected", "Read"],
+    "notificationBodyPatterns": ["Take notes", "Read AI"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "tl-dv",
+    "name": "tl;dv",
+    "bundleIds": ["com.tldv.app", "io.tldv.desktop"],
+    "helperProcessNames": ["tl;dv", "tldv"],
+    "appNameHints": ["tl;dv", "tldv"],
+    "notificationTitlePatterns": ["Meeting detected", "tl;dv"],
+    "notificationBodyPatterns": ["Take notes", "tl;dv"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "circleback",
+    "name": "Circleback",
+    "bundleIds": ["com.circleback.app", "ai.circleback.desktop"],
+    "helperProcessNames": ["Circleback", "Circleback Helper"],
+    "appNameHints": ["Circleback"],
+    "notificationTitlePatterns": ["Meeting detected", "Circleback", "Note-taking is available"],
+    "notificationBodyPatterns": ["Take notes", "Circleback", "Start Notetaker"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "sembly",
+    "name": "Sembly",
+    "bundleIds": ["com.sembly.ai", "ai.sembly.desktop"],
+    "helperProcessNames": ["Sembly"],
+    "appNameHints": ["Sembly"],
+    "notificationTitlePatterns": ["Meeting detected", "Sembly"],
+    "notificationBodyPatterns": ["Take notes", "Sembly"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "meetgeek",
+    "name": "MeetGeek",
+    "bundleIds": ["com.meetgeek.app", "ai.meetgeek.desktop"],
+    "helperProcessNames": ["MeetGeek"],
+    "appNameHints": ["MeetGeek"],
+    "notificationTitlePatterns": ["Meeting detected", "MeetGeek"],
+    "notificationBodyPatterns": ["Take notes", "MeetGeek"],
+    "policy": "suspendDuringMeeting"
+  },
+  {
+    "id": "zoom-companion",
+    "name": "Zoom AI Companion",
+    "bundleIds": ["us.zoom.xos"],
+    "helperProcessNames": [],
+    "appNameHints": ["zoom.us", "Zoom"],
+    "notificationTitlePatterns": ["Note-taking is available", "AI Companion", "Take notes"],
+    "notificationBodyPatterns": ["Take notes", "AI Companion", "Note-taking is available", "Take notes with"],
+    "policy": "ignore"
+  },
+  {
+    "id": "notion-ai-notes",
+    "name": "Notion AI notes",
+    "bundleIds": ["notion.id"],
+    "helperProcessNames": [],
+    "appNameHints": ["Notion"],
+    "notificationTitlePatterns": ["Take notes", "Meeting notes", "Notion AI"],
+    "notificationBodyPatterns": ["Take notes", "Meeting notes", "Notion AI", "Start taking notes"],
+    "policy": "ignore"
+  },
+  {
+    "id": "chrome-notetakers",
+    "name": "Browser meeting helpers",
+    "bundleIds": ["com.google.Chrome", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac"],
+    "helperProcessNames": [],
+    "appNameHints": ["Google Chrome", "Arc", "Brave Browser", "Microsoft Edge"],
+    "notificationTitlePatterns": ["Meeting detected", "Note-taking is available"],
+    "notificationBodyPatterns": ["Take notes", "Start Notetaker"],
+    "policy": "ignore"
+  }
+]
