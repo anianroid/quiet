@@ -110,6 +110,16 @@
     "policy": "ignore"
   },
   {
+    "id": "notion-calendar-notetaker",
+    "name": "Notion Calendar Notetaker",
+    "bundleIds": ["com.cron.electron"],
+    "helperProcessNames": [],
+    "appNameHints": ["Notion Calendar"],
+    "notificationTitlePatterns": ["Meeting detected", "Start Notetaker", "Notetaker"],
+    "notificationBodyPatterns": ["Start Notetaker", "Notetaker", "Meeting detected"],
+    "policy": "ignore"
+  },
+  {
     "id": "chrome-notetakers",
     "name": "Browser meeting helpers",
     "bundleIds": ["com.google.Chrome", "company.thebrowser.Browser", "com.brave.Browser", "com.microsoft.edgemac"],

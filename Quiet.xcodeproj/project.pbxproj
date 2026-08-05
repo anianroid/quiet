@@ -31,6 +31,7 @@
 		5B88A7D9F0CA5DBD50F16B96 /* CompetitorScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B417C6C0AB1DB16F276242A /* CompetitorScanner.swift */; };
 		5C4CACA36701DF6C3A775DD1 /* MeetingDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9869A705BCA54FAC09C24858 /* MeetingDetector.swift */; };
 		60C3ED74D86976D1C8BF34CF /* AudioCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 830A260E8725D303E58B60A3 /* AudioCaptureSession.swift */; };
+		6659C53675B36124D0B07A8F /* HostOverlayWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */; };
 		6EE49577FE405CD4565098E0 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6C677A4448109AEEB1FB938 /* Models.swift */; };
 		70546C519B77BAE209215635 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2F384483B030D55CC52EF6F /* AppDelegate.swift */; };
 		7548BBC0A5C288BCF8F1D93E /* MicCaptureSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = 150E2C0F4C5CAE72532FA299 /* MicCaptureSession.swift */; };
@@ -58,6 +59,7 @@
 		EC10DED3AF173B1BC40C0EB0 /* BufferConverter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5ACBFF6694821854120926FE /* BufferConverter.swift */; };
 		EC293A94C91B82E8FEA648E0 /* QuietApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11F40D9F7C1B58F283E1D7A0 /* QuietApp.swift */; };
 		EFDF22645CBCDA7AAB78CEEE /* NotesSummarizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B48B79C817412DBD12C859F /* NotesSummarizer.swift */; };
+		F92C38D5FD7810A7A4A5C39B /* HostOverlayWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */; };
 		F9CF5D55ED962F65FD9B7F01 /* CompetitorScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B417C6C0AB1DB16F276242A /* CompetitorScanner.swift */; };
 /* End PBXBuildFile section */
 
@@ -79,6 +81,7 @@
 		47B1747690BEBE3AB2B9EF79 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4F1F497130E0863EA028C45E /* NotificationWatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationWatcherTests.swift; sourceTree = "<group>"; };
 		5ACBFF6694821854120926FE /* BufferConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferConverter.swift; sourceTree = "<group>"; };
+		7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostOverlayWatcher.swift; sourceTree = "<group>"; };
 		830A260E8725D303E58B60A3 /* AudioCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureSession.swift; sourceTree = "<group>"; };
 		8A8537A0F7220162F9CE79B2 /* CompetitorWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompetitorWatchdog.swift; sourceTree = "<group>"; };
 		8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeTranscriptTests.swift; sourceTree = "<group>"; };
@@ -209,6 +212,7 @@
 				1C568A0A15B69E1E5E804A3F /* CompetitorCatalog.swift */,
 				1B417C6C0AB1DB16F276242A /* CompetitorScanner.swift */,
 				8A8537A0F7220162F9CE79B2 /* CompetitorWatchdog.swift */,
+				7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */,
 				445BD78022F6651A2E0E06E4 /* NotificationWatcher.swift */,
 				41DAEC984A4B9380EC024EAE /* ProcessController.swift */,
 				3793E4823A62BA68364F2BD2 /* QuietBanner.swift */,
@@ -360,6 +364,7 @@
 				00AF9B333A02DDF6ED8635A3 /* CompetitorCatalog.swift in Sources */,
 				F9CF5D55ED962F65FD9B7F01 /* CompetitorScanner.swift in Sources */,
 				2213682F000C10238B223F86 /* CompetitorWatchdog.swift in Sources */,
+				F92C38D5FD7810A7A4A5C39B /* HostOverlayWatcher.swift in Sources */,
 				34FD053C7C8663966D5518A8 /* HostOwnsNotesView.swift in Sources */,
 				5C4CACA36701DF6C3A775DD1 /* MeetingDetector.swift in Sources */,
 				18297D2B89B7CC55BB655E24 /* MeetingTranscriber.swift in Sources */,
@@ -389,6 +394,7 @@
 				938C58DC2B4ABD588F8DFD04 /* CompetitorCatalog.swift in Sources */,
 				5B88A7D9F0CA5DBD50F16B96 /* CompetitorScanner.swift in Sources */,
 				E0BB8E3963A27668429B49EB /* CompetitorWatchdog.swift in Sources */,
+				6659C53675B36124D0B07A8F /* HostOverlayWatcher.swift in Sources */,
 				D422AAB315A2D3328FEEE866 /* HostOwnsNotesView.swift in Sources */,
 				78D7379FEFB4E8020D801EDD /* MeetingDetector.swift in Sources */,
 				47B3D08163968DAC40F500C2 /* MeetingDetectorTests.swift in Sources */,

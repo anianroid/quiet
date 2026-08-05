@@ -42,7 +42,19 @@ struct HostOwnsNotesView: View {
                 )
             }
 
-            if !appState.isZoomInstalled && !appState.isNotionInstalled {
+            if appState.isNotionCalendarInstalled {
+                hostCard(
+                    title: "Notion Calendar Notetaker",
+                    steps: "Open Notion Calendar → Settings → Notetaker (or Meetings) → turn off the automatic “Start Notetaker” pill for detected meetings.",
+                    done: appState.hostNotionCalendarNotesDisabled,
+                    openTitle: "Open Notion Calendar",
+                    open: { appState.openNotionCalendarForHostSetup() },
+                    onMarkDone: { appState.hostNotionCalendarNotesDisabled = true },
+                    onUndo: { appState.hostNotionCalendarNotesDisabled = false }
+                )
+            }
+
+            if !appState.isZoomInstalled && !appState.isNotionInstalled && !appState.isNotionCalendarInstalled {
                 ContentUnavailableView(
                     "No Zoom or Notion found",
                     systemImage: "checkmark.seal",

@@ -20,17 +20,23 @@ final class NotificationWatcher {
     /// plus a builtin seed so an empty catalog still covers the big names.
     private let vendorMarkers: [String]
 
-    /// Generic notetaker-prompt copy. Never sufficient alone — a vendor marker
-    /// must also be present in the banner text before we dismiss.
-    private static let genericPhrases: [String] = [
-        "Meeting detected",
-        "Start Notetaker",
+    /// Copy that only ever appears in a notetaker prompt — dismissible on its
+    /// own. Zoom's web banner is literally just "Note-taking is available" +
+    /// "Chrome", with no vendor word anywhere in the text.
+    private static let strongPhrases: [String] = [
         "Note-taking is available",
+        "Start Notetaker",
         "Start note taker",
         "Notetaker is ready",
-        "Take notes with",
-        "Take notes",
         "Start taking notes",
+        "Take notes with",
+        "Meeting detected"
+    ]
+
+    /// Ambiguous copy a user's own reminder could contain — a vendor marker
+    /// must also be present in the banner text before we dismiss.
+    private static let weakPhrases: [String] = [
+        "Take notes",
         "Meeting notes"
     ]
 
@@ -63,6 +69,7 @@ final class NotificationWatcher {
 
     func start() {
         stop()
+        Self.logger.notice("NotificationWatcher.start axTrusted=\(AXIsProcessTrusted()) markers=\(self.vendorMarkers.count)")
         guard AXIsProcessTrusted() else { return }
         timer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
             Task { @MainActor in
@@ -96,7 +103,45 @@ final class NotificationWatcher {
 
             guard isNotificationSurface else { continue }
             let element = AXUIElementCreateApplication(app.processIdentifier)
-            dismissMatchingBanners(in: element, depth: 0)
+            if UserDefaults.standard.bool(forKey: "quiet.axDump") {
+                dumpTree(element, depth: 0, path: bid.isEmpty ? name : bid)
+            }
+            // Banners live in AXSystemDialog windows — walking only those skips
+            // the widget stacks and the app's entire menu tree every sweep.
+            var windowsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+               let windows = windowsRef as? [AXUIElement] {
+                for window in windows {
+                    let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
+                    guard subrole == "AXSystemDialog" else { continue }
+                    dismissMatchingBanners(in: window, depth: 0)
+                }
+            } else {
+                dismissMatchingBanners(in: element, depth: 0)
+            }
+        }
+    }
+
+    /// Diagnostics only — logs the Notification Center AX tree at notice level.
+    private func dumpTree(_ element: AXUIElement, depth: Int, path: String) {
+        guard depth < 14 else { return }
+        let role = copyString(element, kAXRoleAttribute as String) ?? "?"
+        let subrole = copyString(element, kAXSubroleAttribute as String) ?? ""
+        let blob = elementTextBlob(element)
+        var actionsRef: CFArray?
+        var actions: [String] = []
+        if AXUIElementCopyActionNames(element, &actionsRef) == .success,
+           let list = actionsRef as? [String] {
+            actions = list
+        }
+        if !blob.isEmpty || !actions.isEmpty || !subrole.isEmpty {
+            Self.logger.notice("AXDUMP d\(depth) \(path, privacy: .public) role=\(role, privacy: .public) sub=\(subrole, privacy: .public) actions=\(actions.joined(separator: ","), privacy: .public) text=\(String(blob.prefix(100)), privacy: .public)")
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for (i, child) in children.enumerated() {
+            dumpTree(child, depth: depth + 1, path: path + "/\(i)")
         }
     }
 
@@ -105,9 +150,13 @@ final class NotificationWatcher {
 
         let blob = elementTextBlob(element)
         if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Quiet") {
-            Self.logger.info("Dismissing notetaker banner: \(String(blob.prefix(120)), privacy: .public)")
-            _ = pressCloseButton(in: element)
-            AXUIElementPerformAction(element, kAXCancelAction as CFString)
+            // macOS 26 banners expose a custom named Close action (not AXPress
+            // on a close button, not AXCancel) — perform it verbatim, with the
+            // legacy paths kept as fallbacks for older banner styles.
+            let closed = performNamedCloseAction(on: element)
+                || pressCloseButton(in: element)
+                || AXUIElementPerformAction(element, kAXCancelAction as CFString) == .success
+            Self.logger.notice("Notetaker banner \(closed ? "dismissed" : "matched but not dismissable", privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
             return
         }
 
@@ -119,10 +168,14 @@ final class NotificationWatcher {
         }
     }
 
-    /// A banner is a notetaker prompt only when a generic phrase AND a vendor
-    /// marker are both present. "Meeting notes" alone is never dismissed.
+    /// A banner is a notetaker prompt when it contains a strong phrase, or a
+    /// weak phrase together with a vendor marker. "Meeting notes" alone is
+    /// never dismissed.
     func isNotetakerPrompt(_ text: String) -> Bool {
-        guard Self.genericPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
+        if Self.strongPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) {
+            return true
+        }
+        guard Self.weakPhrases.contains(where: { text.localizedCaseInsensitiveContains($0) }) else {
             return false
         }
         return NameTokenMatcher.name(text, matchesAnyOf: vendorMarkers)
@@ -136,6 +189,21 @@ final class NotificationWatcher {
         ]
         .compactMap { $0 }
         .joined(separator: " ")
+    }
+
+    /// Performs the element's own named close action — the action names on
+    /// macOS 26 banners are opaque descriptor strings ("…,Name:Close"), so
+    /// match by substring and pass the raw string back verbatim.
+    private func performNamedCloseAction(on element: AXUIElement) -> Bool {
+        var actionsRef: CFArray?
+        guard AXUIElementCopyActionNames(element, &actionsRef) == .success,
+              let actions = actionsRef as? [String] else { return false }
+        for action in actions where action.localizedCaseInsensitiveContains("close") {
+            if AXUIElementPerformAction(element, action as CFString) == .success {
+                return true
+            }
+        }
+        return false
     }
 
     private func pressCloseButton(in element: AXUIElement) -> Bool {

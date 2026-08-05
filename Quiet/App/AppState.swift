@@ -44,6 +44,11 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(hostNotionNotesDisabled, forKey: Keys.hostNotion) }
     }
 
+    /// One-time: user turned off Notion Calendar's notetaker pill.
+    @Published var hostNotionCalendarNotesDisabled: Bool {
+        didSet { UserDefaults.standard.set(hostNotionCalendarNotesDisabled, forKey: Keys.hostNotionCalendar) }
+    }
+
     /// While paused Quiet stops guarding entirely — watchdog, banner dismissal,
     /// and meeting detection are off until `pausedUntil` (or Resume now).
     @Published var isPaused = false
@@ -64,6 +69,7 @@ final class AppState: ObservableObject {
     let scanner: CompetitorScanner
     let processController: ProcessController
     let notificationWatcher: NotificationWatcher
+    let hostOverlayWatcher: HostOverlayWatcher
     let quietBanner: QuietBannerController
     let meetingDetector: MeetingDetector
     let audioCapture: AudioCaptureSession
@@ -103,6 +109,7 @@ final class AppState: ObservableObject {
         static let autoCapture = "quiet.autoCaptureEnabled"
         static let hostZoom = "quiet.hostNotesDisabled.zoom"
         static let hostNotion = "quiet.hostNotesDisabled.notion"
+        static let hostNotionCalendar = "quiet.hostNotesDisabled.notionCalendar"
     }
 
     var menuBarSymbolName: String {
@@ -122,11 +129,17 @@ final class AppState: ObservableObject {
             || FileManager.default.fileExists(atPath: "/Applications/Notion.app")
     }
 
+    var isNotionCalendarInstalled: Bool {
+        NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.cron.electron") != nil
+            || FileManager.default.fileExists(atPath: "/Applications/Notion Calendar.app")
+    }
+
     /// True when every installed host that can spam Take notes is marked done.
     var hostOwnsNotesComplete: Bool {
         let zoomOK = !isZoomInstalled || hostZoomNotesDisabled
         let notionOK = !isNotionInstalled || hostNotionNotesDisabled
-        return zoomOK && notionOK
+        let notionCalOK = !isNotionCalendarInstalled || hostNotionCalendarNotesDisabled
+        return zoomOK && notionOK && notionCalOK
     }
 
     private init() {
@@ -134,6 +147,7 @@ final class AppState: ObservableObject {
         self.scanner = CompetitorScanner(catalog: catalog)
         self.processController = ProcessController(catalog: catalog)
         self.notificationWatcher = NotificationWatcher(catalog: catalog)
+        self.hostOverlayWatcher = HostOverlayWatcher()
         self.quietBanner = QuietBannerController()
         self.meetingDetector = MeetingDetector()
         self.audioCapture = AudioCaptureSession()
@@ -149,6 +163,7 @@ final class AppState: ObservableObject {
         self.autoCaptureEnabled = UserDefaults.standard.object(forKey: Keys.autoCapture) as? Bool ?? false
         self.hostZoomNotesDisabled = UserDefaults.standard.bool(forKey: Keys.hostZoom)
         self.hostNotionNotesDisabled = UserDefaults.standard.bool(forKey: Keys.hostNotion)
+        self.hostNotionCalendarNotesDisabled = UserDefaults.standard.bool(forKey: Keys.hostNotionCalendar)
         // Orphan setting removed — quitCompetitorsEnabled is the one kill switch.
         UserDefaults.standard.removeObject(forKey: "quiet.hijackEnabled")
 
@@ -182,9 +197,18 @@ final class AppState: ObservableObject {
         }
     }
 
+    func openNotionCalendarForHostSetup() {
+        if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.cron.electron") {
+            NSWorkspace.shared.openApplication(at: url, configuration: NSWorkspace.OpenConfiguration())
+        } else {
+            NSWorkspace.shared.open(URL(fileURLWithPath: "/Applications/Notion Calendar.app"))
+        }
+    }
+
     func markInstalledHostsNotesDone() {
         if isZoomInstalled { hostZoomNotesDisabled = true }
         if isNotionInstalled { hostNotionNotesDisabled = true }
+        if isNotionCalendarInstalled { hostNotionCalendarNotesDisabled = true }
     }
 
     func rescanCompetitors() {
@@ -223,8 +247,10 @@ final class AppState: ObservableObject {
 
         if dismissBannersEnabled {
             notificationWatcher.start()
+            hostOverlayWatcher.start()
         } else {
             notificationWatcher.stop()
+            hostOverlayWatcher.stop()
         }
 
         // The watchdog tick never touches disk, so refresh the installed list
@@ -272,6 +298,7 @@ final class AppState: ObservableObject {
         detectorTask = nil
         competitorWatchdog.stop()
         notificationWatcher.stop()
+        hostOverlayWatcher.stop()
 
         statusMessage = "Paused until \(until.formatted(date: .omitted, time: .shortened))"
         logger.info("Paused monitoring for \(Int(duration), privacy: .public)s")
@@ -342,6 +369,7 @@ final class AppState: ObservableObject {
 
         if dismissBannersEnabled {
             notificationWatcher.start()
+            hostOverlayWatcher.start()
         }
 
         // Persistent notch island for the meeting — not a 5s toast.
