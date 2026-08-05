@@ -2,6 +2,8 @@ import AppKit
 import ApplicationServices
 import CoreGraphics
 import Foundation
+import ScreenCaptureKit
+import Vision
 import os.log
 
 /// Layer C — suppress the floating "Start Notetaker" pills apps draw
@@ -18,7 +20,7 @@ import os.log
 /// ever pressed — only close affordances, else the window is parked off-screen.
 @MainActor
 final class HostOverlayWatcher {
-    private static let logger = Logger(subsystem: "notes.quiet.app", category: "HostOverlayWatcher")
+    nonisolated static let logger = Logger(subsystem: "notes.quiet.app", category: "HostOverlayWatcher")
 
     /// Electron does not reliably post AXWindowCreated for its notification
     /// panels, so the poll is what actually catches a pill. During a meeting it
@@ -37,6 +39,20 @@ final class HostOverlayWatcher {
     /// Apps told to expose their web content, so the switch is flipped once each.
     private var manualAccessibilityEnabled: Set<pid_t> = []
 
+    /// Pixel-read verdicts per window, for apps whose UI is invisible to
+    /// Accessibility. Cached so each window costs one capture, re-checked while
+    /// a meeting is running because a pill can appear inside an existing window.
+    private struct OCRVerdict {
+        let isNotetakerPrompt: Bool
+        let checkedAt: Date
+        let text: String
+    }
+    private var ocrVerdicts: [CGWindowID: OCRVerdict] = [:]
+    private var ocrPending: Set<CGWindowID> = []
+    private static let ocrRecheckInterval: TimeInterval = 3
+    /// Screen Recording is optional for this layer — say so once, not per sweep.
+    private var loggedCaptureUnavailable = false
+
     func start() {
         stop()
         Self.logger.notice("HostOverlayWatcher.start axTrusted=\(AXIsProcessTrusted()) interval=\(self.interval)")
@@ -47,6 +63,15 @@ final class HostOverlayWatcher {
             }
         }
         sweep()
+        if UserDefaults.standard.bool(forKey: "quiet.axProbe") {
+            probeCandidates()
+            // Electron builds its AX tree lazily after AXManualAccessibility is
+            // set — a second pass shows whether the content becomes readable.
+            Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                self?.probeCandidates()
+            }
+        }
     }
 
     func stop() {
@@ -65,80 +90,203 @@ final class HostOverlayWatcher {
         }
     }
 
+    /// An on-screen window small enough to be a prompt pill, as CoreGraphics
+    /// sees it. CG is the source of truth for geometry because floating panels
+    /// (Electron's pills) are routinely absent from an app's AX windows list.
+    private struct Candidate {
+        let pid: pid_t
+        let windowID: CGWindowID
+        let frame: CGRect
+    }
+
     private func sweep() {
         guard !isSweeping else { return }
         isSweeping = true
         defer { isSweeping = false }
 
-        // CoreGraphics narrows ~60 running apps to the handful owning a small
-        // floating window — one cheap call instead of AX round-trips per app.
-        for pid in candidatePIDs() {
-            inspect(pid: pid)
+        // One cheap CG call narrows ~60 running apps to the few owning a small
+        // floating window; only those get AX round-trips.
+        let found = candidates()
+        for candidate in found {
+            inspect(candidate)
         }
+        pruneVerdicts(seen: Set(found.map(\.windowID)))
     }
 
-    /// PIDs owning an on-screen window small enough to be a prompt pill.
-    private func candidatePIDs() -> Set<pid_t> {
+    private func candidates() -> [Candidate] {
         let options = CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])
         guard let info = CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]] else {
             return []
         }
 
         let ownPID = ProcessInfo.processInfo.processIdentifier
-        var pids: Set<pid_t> = []
+        var found: [Candidate] = []
         for window in info {
             guard let pid = window[kCGWindowOwnerPID as String] as? pid_t, pid != ownPID else { continue }
+            guard let windowID = window[kCGWindowNumber as String] as? CGWindowID else { continue }
             guard let bounds = window[kCGWindowBounds as String] as? [String: Any],
-                  let height = bounds["Height"] as? CGFloat,
-                  height >= Self.minOverlayHeight, height <= Self.maxOverlayHeight else { continue }
-            pids.insert(pid)
+                  let x = bounds["X"] as? CGFloat, let y = bounds["Y"] as? CGFloat,
+                  let width = bounds["Width"] as? CGFloat, let height = bounds["Height"] as? CGFloat,
+                  height >= Self.minOverlayHeight, height <= Self.maxOverlayHeight,
+                  width >= 80 else { continue }
+            found.append(Candidate(pid: pid, windowID: windowID, frame: CGRect(x: x, y: y, width: width, height: height)))
         }
-        return pids
+        return found
     }
 
-    private func inspect(pid: pid_t) {
-        guard let app = NSRunningApplication(processIdentifier: pid) else { return }
+    private func inspect(_ candidate: Candidate) {
+        guard let app = NSRunningApplication(processIdentifier: candidate.pid) else { return }
         let bundleID = app.bundleIdentifier ?? ""
         // Apple's own surfaces are Layer B's job (Notification Center) or system
         // UI we must never touch.
         guard !bundleID.hasPrefix("com.apple."), bundleID != Bundle.main.bundleIdentifier else { return }
 
-        let appElement = AXUIElementCreateApplication(pid)
-        if !manualAccessibilityEnabled.contains(pid) {
+        if !manualAccessibilityEnabled.contains(candidate.pid) {
             // Electron only emits its web-content AX tree when an assistive
             // client asks; without this the pill's text reads as empty.
+            let appElement = AXUIElementCreateApplication(candidate.pid)
             AXUIElementSetAttributeValue(appElement, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-            manualAccessibilityEnabled.insert(pid)
+            manualAccessibilityEnabled.insert(candidate.pid)
         }
 
-        var windowsRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
-              let windows = windowsRef as? [AXUIElement] else { return }
+        guard let window = resolveWindow(for: candidate) else {
+            if UserDefaults.standard.bool(forKey: "quiet.axDump") {
+                Self.logger.notice("OVERLAYDUMP \(bundleID, privacy: .public) frame=\(candidate.frame.debugDescription, privacy: .public): no AX element resolved")
+            }
+            return
+        }
+        // Critical safety gate: a hit-test can climb past a pill into the app's
+        // main window, and parking that off-screen would be destructive. Only
+        // ever act on an element that is itself pill-sized.
+        guard isOverlaySized(window), !isOffScreen(window) else {
+            if UserDefaults.standard.bool(forKey: "quiet.axDump") {
+                Self.logger.notice("OVERLAYDUMP \(bundleID, privacy: .public) resolved to \(self.windowSizeDescription(window), privacy: .public) — too large, skipped")
+            }
+            return
+        }
 
+        var blob = ""
+        collectText(window, into: &blob, depth: 0)
         let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
-        for window in windows {
-            guard isOverlaySized(window), !isOffScreen(window) else { continue }
-
-            var blob = ""
-            collectText(window, into: &blob, depth: 0)
-            if debug {
-                let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
-                Self.logger.notice("OVERLAYDUMP \(bundleID, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) text=\(String(blob.prefix(200)), privacy: .public)")
-            }
-
-            // Strong copy only — never the ambiguous "Meeting notes" wording a
-            // user's own reminder might carry.
-            guard !blob.isEmpty,
-                  NotetakerPhrases.containsStrong(blob),
-                  !blob.localizedCaseInsensitiveContains("Quiet")
-            else { continue }
-
-            if debug {
-                dumpSubtree(window, depth: 0, path: bundleID)
-            }
-            let strategy = dismiss(window)
-            Self.logger.notice("Overlay (\(app.localizedName ?? bundleID, privacy: .public)) \(strategy, privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
+        if debug {
+            let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
+            Self.logger.notice("OVERLAYDUMP \(bundleID, privacy: .public) size=\(self.windowSizeDescription(window), privacy: .public) sub=\(subrole, privacy: .public) text=\(String(blob.prefix(200)), privacy: .public)")
         }
+
+        // Strong copy only — never the ambiguous "Meeting notes" wording a
+        // user's own reminder might carry.
+        let axSaysPrompt = !blob.isEmpty
+            && NotetakerPhrases.containsStrong(blob)
+            && !blob.localizedCaseInsensitiveContains("Quiet")
+
+        // Apps that expose no Accessibility content (Wispr Flow) can only be
+        // identified by reading their pixels.
+        let verdict = ocrVerdicts[candidate.windowID]
+        let pixelsSayPrompt = verdict?.isNotetakerPrompt ?? false
+        if !axSaysPrompt && !pixelsSayPrompt {
+            requestPixelRead(for: candidate)
+            return
+        }
+
+        if debug {
+            dumpSubtree(window, depth: 0, path: bundleID)
+        }
+        let evidence = axSaysPrompt ? String(blob.prefix(120)) : String((verdict?.text ?? "").prefix(120))
+        let source = axSaysPrompt ? "ax" : "pixels"
+        let strategy = dismiss(window)
+        Self.logger.notice("Overlay (\(app.localizedName ?? bundleID, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
+    }
+
+    /// Captures and reads a candidate's pixels once, caching the verdict. The
+    /// next sweep (100ms later during a meeting) acts on the result.
+    private func requestPixelRead(for candidate: Candidate) {
+        let windowID = candidate.windowID
+        guard !ocrPending.contains(windowID) else { return }
+        if let existing = ocrVerdicts[windowID] {
+            // A pill can appear inside a window already judged benign, but only
+            // re-read while a meeting is running.
+            let stale = Date().timeIntervalSince(existing.checkedAt) > Self.ocrRecheckInterval
+            guard stale, interval == Self.meetingInterval else { return }
+        }
+
+        ocrPending.insert(windowID)
+        Task { @MainActor [weak self] in
+            let text = await Self.recognizeText(windowID: windowID)
+            guard let self else { return }
+            self.ocrPending.remove(windowID)
+            guard let text else {
+                // No capture — Screen Recording is off. AX-only from here.
+                if !self.loggedCaptureUnavailable {
+                    self.loggedCaptureUnavailable = true
+                    Self.logger.notice("Pixel reading unavailable (Screen Recording not granted) — overlay suppression is Accessibility-only for apps that expose no AX content")
+                }
+                return
+            }
+            self.ocrVerdicts[windowID] = OCRVerdict(
+                isNotetakerPrompt: NotetakerPhrases.containsStrong(text)
+                    && !text.localizedCaseInsensitiveContains("Quiet"),
+                checkedAt: Date(),
+                text: text
+            )
+        }
+    }
+
+    /// Drops verdicts for windows that no longer exist so the cache can't grow
+    /// without bound over a long session.
+    private func pruneVerdicts(seen: Set<CGWindowID>) {
+        guard ocrVerdicts.count > 64 else { return }
+        ocrVerdicts = ocrVerdicts.filter { seen.contains($0.key) }
+    }
+
+    /// Finds the AX element for a CG window. The app's AX windows list is tried
+    /// first, then a hit-test at the window's centre — floating panels (which is
+    /// what these pills are) are frequently missing from that list entirely.
+    private func resolveWindow(for candidate: Candidate) -> AXUIElement? {
+        let appElement = AXUIElementCreateApplication(candidate.pid)
+        var windowsRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+           let windows = windowsRef as? [AXUIElement] {
+            for window in windows {
+                guard let position = windowPosition(window), let size = windowSize(window) else { continue }
+                // Same origin and roughly the same size as the CG window.
+                if abs(position.x - candidate.frame.origin.x) < 4,
+                   abs(position.y - candidate.frame.origin.y) < 4,
+                   abs(size.height - candidate.frame.height) < 8 {
+                    return window
+                }
+            }
+        }
+        return hitTestWindow(at: CGPoint(x: candidate.frame.midX, y: candidate.frame.midY), pid: candidate.pid)
+    }
+
+    /// Walks up from whatever element sits under `point` to its containing
+    /// window, ignoring hits that belong to a different process.
+    private func hitTestWindow(at point: CGPoint, pid: pid_t) -> AXUIElement? {
+        let systemWide = AXUIElementCreateSystemWide()
+        var elementRef: AXUIElement?
+        guard AXUIElementCopyElementAtPosition(systemWide, Float(point.x), Float(point.y), &elementRef) == .success,
+              let element = elementRef else { return nil }
+
+        var elementPID: pid_t = 0
+        guard AXUIElementGetPid(element, &elementPID) == .success, elementPID == pid else { return nil }
+
+        for attribute in [kAXWindowAttribute as String, kAXTopLevelUIElementAttribute as String] {
+            var ref: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, attribute as CFString, &ref) == .success, let ref {
+                return (ref as! AXUIElement)
+            }
+        }
+
+        // Neither attribute is exposed — climb the parent chain to the window.
+        var current = element
+        for _ in 0..<14 {
+            if copyString(current, kAXRoleAttribute as String) == (kAXWindowRole as String) { return current }
+            var parentRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(current, kAXParentAttribute as CFString, &parentRef) == .success,
+                  let parentRef else { return nil }
+            current = (parentRef as! AXUIElement)
+        }
+        return nil
     }
 
     private func isOverlaySized(_ window: AXUIElement) -> Bool {
@@ -249,6 +397,100 @@ final class HostOverlayWatcher {
               let children = childrenRef as? [AXUIElement] else { return }
         for child in children {
             collectText(child, into: &blob, depth: depth + 1)
+        }
+    }
+
+    /// Reads a window's text from its pixels, on-device, via Vision.
+    ///
+    /// Some apps (Wispr Flow) render their pills with no Accessibility content
+    /// at all — the AX tree reports only a window title. Nothing text-based can
+    /// identify those, so Quiet reads what the user sees instead. Local, no
+    /// network, and app-agnostic by construction.
+    nonisolated static func recognizeText(windowID: CGWindowID) async -> String? {
+        let content: SCShareableContent
+        do {
+            content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
+        } catch {
+            logger.error("OCR: shareable content failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+        guard let window = content.windows.first(where: { $0.windowID == windowID }) else {
+            logger.error("OCR: window \(windowID) not in \(content.windows.count) shareable windows")
+            return nil
+        }
+
+        let configuration = SCStreamConfiguration()
+        configuration.width = Int(window.frame.width * 2)
+        configuration.height = Int(window.frame.height * 2)
+        configuration.showsCursor = false
+        configuration.captureResolution = .best
+
+        let image: CGImage
+        do {
+            image = try await SCScreenshotManager.captureImage(
+                contentFilter: SCContentFilter(desktopIndependentWindow: window),
+                configuration: configuration
+            )
+        } catch {
+            logger.error("OCR: capture failed: \(error.localizedDescription, privacy: .public)")
+            return nil
+        }
+
+        let request = VNRecognizeTextRequest()
+        // Prompt copy is large and high-contrast — accuracy costs more than it buys.
+        request.recognitionLevel = .fast
+        request.usesLanguageCorrection = false
+
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        try? handler.perform([request])
+        let lines = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return lines.isEmpty ? nil : lines.joined(separator: " ")
+    }
+
+    /// Diagnostics only — reports, for every small on-screen window, whether an
+    /// AX element resolves and what text it carries. Verifies the resolution
+    /// path against real floating panels without needing a live meeting.
+    func probeCandidates() {
+        // Deliberately looser than the live gate so third-party floating panels
+        // above the pill size cap still report whether they resolve.
+        let options = CGWindowListOption([.optionOnScreenOnly, .excludeDesktopElements])
+        let info = (CGWindowListCopyWindowInfo(options, kCGNullWindowID) as? [[String: Any]]) ?? []
+        var found: [Candidate] = []
+        for window in info {
+            guard let pid = window[kCGWindowOwnerPID as String] as? pid_t,
+                  let windowID = window[kCGWindowNumber as String] as? CGWindowID,
+                  let bounds = window[kCGWindowBounds as String] as? [String: Any],
+                  let x = bounds["X"] as? CGFloat, let y = bounds["Y"] as? CGFloat,
+                  let width = bounds["Width"] as? CGFloat, let height = bounds["Height"] as? CGFloat,
+                  height >= Self.minOverlayHeight, height <= 700, width >= 80 else { continue }
+            let bundleID = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier ?? ""
+            guard !bundleID.hasPrefix("com.apple.") else { continue }
+            found.append(Candidate(pid: pid, windowID: windowID, frame: CGRect(x: x, y: y, width: width, height: height)))
+        }
+
+        Self.logger.notice("CANDIDATEPROBE \(found.count) third-party window(s)")
+        for candidate in found {
+            let app = NSRunningApplication(processIdentifier: candidate.pid)
+            let label = app?.localizedName ?? app?.bundleIdentifier ?? "pid \(candidate.pid)"
+            // Same switch the live path flips — without it Electron reports only
+            // the window title and the pill's copy is invisible.
+            AXUIElementSetAttributeValue(
+                AXUIElementCreateApplication(candidate.pid),
+                "AXManualAccessibility" as CFString,
+                kCFBooleanTrue
+            )
+            guard let window = resolveWindow(for: candidate) else {
+                Self.logger.notice("CANDIDATEPROBE \(label, privacy: .public) frame=\(candidate.frame.debugDescription, privacy: .public): UNRESOLVED")
+                continue
+            }
+            var blob = ""
+            collectText(window, into: &blob, depth: 0)
+            let size = windowSizeDescription(window)
+            let windowID = candidate.windowID
+            Task { @MainActor in
+                let ocr = await Self.recognizeText(windowID: windowID) ?? "<no capture>"
+                Self.logger.notice("CANDIDATEPROBE \(label, privacy: .public) resolved=\(size, privacy: .public) ax=\(String(blob.prefix(60)), privacy: .public) OCR=\(String(ocr.prefix(140)), privacy: .public)")
+            }
         }
     }
 
