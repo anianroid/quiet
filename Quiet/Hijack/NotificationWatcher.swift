@@ -1,50 +1,38 @@
 import AppKit
 import ApplicationServices
 import Foundation
+import os.log
 
 /// Layer B — dismiss competing **notetaker banners only**.
-/// Deliberately narrow: never walk Zoom/Chrome/System Settings UI trees.
+/// Deliberately narrow: never walk Zoom/Chrome/System Settings UI trees, and
+/// only dismiss when a vendor marker (Otter, Granola, Fireflies…) co-occurs
+/// with a generic notetaker phrase — a user's own "Meeting notes" reminder is
+/// never eaten.
 @MainActor
 final class NotificationWatcher {
-    private let catalog: CompetitorCatalog
-    private var timer: Timer?
-    private var patterns: [String] = []
-    private var isSweeping = false
+    private static let logger = Logger(subsystem: "notes.quiet.app", category: "NotificationWatcher")
 
-    /// Precise notetaker-prompt copy. Avoid lone vendor names that match unrelated banners.
-    private static let builtinPatterns: [String] = [
-        "Meeting detected",
-        "Start Notetaker",
-        "Note-taking is available",
-        "Start note taker",
-        "Notetaker is ready",
-        "Take notes with",
-        "Take notes",
-        "AI Companion",
-        "Start taking notes",
-        "Meeting notes"
-    ]
+    private var timer: Timer?
+    private var isSweeping = false
+    private var isMeetingActive = false
+    /// Window-created observers per notification-surface pid — kills a banner
+    /// during its fade-in instead of on the next poll tick.
+    private var observers: [pid_t: AXObserver] = [:]
+
+    /// All prompt matching — generic phrases plus catalog-derived vendor rules
+    /// — lives in the shared matcher so this layer can't drift from Layer C.
+    private let matcher: NotetakerPromptMatcher
 
     init(catalog: CompetitorCatalog) {
-        self.catalog = catalog
-        let catalogPrecise = catalog.dismissPatterns.filter { pattern in
-            let p = pattern.lowercased()
-            return p.contains("meeting detected")
-                || p.contains("notetaker")
-                || p.contains("note-taking is available")
-                || p.contains("take notes")
-                || p.contains("start notetaker")
-                || p.contains("ai companion")
-                || p.contains("meeting notes")
-                || p.contains("start taking notes")
-        }
-        self.patterns = Array(Set(Self.builtinPatterns + catalogPrecise))
+        self.matcher = NotetakerPromptMatcher(catalog: catalog)
     }
 
     func start() {
         stop()
+        Self.logger.notice("NotificationWatcher.start axTrusted=\(AXIsProcessTrusted()) markers=\(self.matcher.vendorMarkers.count)")
         guard AXIsProcessTrusted() else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+        let interval: TimeInterval = isMeetingActive ? 0.15 : 0.5
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.sweep()
             }
@@ -55,6 +43,42 @@ final class NotificationWatcher {
     func stop() {
         timer?.invalidate()
         timer = nil
+        for observer in observers.values {
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        }
+        observers.removeAll()
+    }
+
+    func setMeetingActive(_ active: Bool) {
+        guard active != isMeetingActive else { return }
+        isMeetingActive = active
+        if timer != nil { start() }
+    }
+
+    private func ensureObserver(for app: NSRunningApplication) {
+        let pid = app.processIdentifier
+        guard observers[pid] == nil else { return }
+
+        let callback: AXObserverCallback = { _, _, _, refcon in
+            guard let refcon else { return }
+            let watcher = Unmanaged<NotificationWatcher>.fromOpaque(refcon).takeUnretainedValue()
+            // The observer's run loop source lives on the main run loop.
+            MainActor.assumeIsolated {
+                watcher.sweep()
+            }
+        }
+
+        var observer: AXObserver?
+        guard AXObserverCreate(pid, callback, &observer) == .success, let observer else { return }
+        let appElement = AXUIElementCreateApplication(pid)
+        AXObserverAddNotification(
+            observer,
+            appElement,
+            kAXWindowCreatedNotification as CFString,
+            Unmanaged.passUnretained(self).toOpaque()
+        )
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
+        observers[pid] = observer
     }
 
     private func sweep() {
@@ -75,18 +99,67 @@ final class NotificationWatcher {
                 || name.contains("usernoted")
 
             guard isNotificationSurface else { continue }
+            ensureObserver(for: app)
             let element = AXUIElementCreateApplication(app.processIdentifier)
-            dismissMatchingBanners(in: element, depth: 0)
+            let debug = UserDefaults.standard.bool(forKey: "quiet.axDump")
+            // Banners live in AXSystemDialog windows — walking only those skips
+            // the widget stacks and the app's entire menu tree every sweep.
+            var windowsRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(element, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+               let windows = windowsRef as? [AXUIElement] {
+                for window in windows {
+                    let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
+                    // Prefer AXSystemDialog (banner chrome) but also walk other
+                    // NC windows — macOS versions vary which subrole they use.
+                    if !subrole.isEmpty && subrole != "AXSystemDialog" && subrole != "AXFloatingWindow" {
+                        continue
+                    }
+                    if debug {
+                        dumpTree(window, depth: 0, path: bid.isEmpty ? name : bid)
+                    }
+                    dismissMatchingBanners(in: window, depth: 0)
+                }
+            } else {
+                dismissMatchingBanners(in: element, depth: 0)
+            }
+        }
+    }
+
+    /// Diagnostics only — logs the Notification Center AX tree at notice level.
+    private func dumpTree(_ element: AXUIElement, depth: Int, path: String) {
+        guard depth < 14 else { return }
+        let role = copyString(element, kAXRoleAttribute as String) ?? "?"
+        let subrole = copyString(element, kAXSubroleAttribute as String) ?? ""
+        let blob = elementTextBlob(element)
+        var actionsRef: CFArray?
+        var actions: [String] = []
+        if AXUIElementCopyActionNames(element, &actionsRef) == .success,
+           let list = actionsRef as? [String] {
+            actions = list
+        }
+        if !blob.isEmpty || !actions.isEmpty || !subrole.isEmpty {
+            Self.logger.notice("AXDUMP d\(depth) \(path, privacy: .public) role=\(role, privacy: .public) sub=\(subrole, privacy: .public) actions=\(actions.joined(separator: ","), privacy: .public) text=\(String(blob.prefix(100)), privacy: .public)")
+        }
+        var childrenRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, kAXChildrenAttribute as CFString, &childrenRef) == .success,
+              let children = childrenRef as? [AXUIElement] else { return }
+        for (i, child) in children.enumerated() {
+            dumpTree(child, depth: depth + 1, path: path + "/\(i)")
         }
     }
 
     private func dismissMatchingBanners(in element: AXUIElement, depth: Int) {
-        guard depth < 6 else { return }
+        guard depth < 10 else { return }
 
         let blob = elementTextBlob(element)
         if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Quiet") {
-            _ = pressCloseButton(in: element)
-            AXUIElementPerformAction(element, kAXCancelAction as CFString)
+            // macOS 26 banners expose a custom named Close action (not AXPress
+            // on a close button, not AXCancel) — perform it verbatim, with the
+            // legacy paths kept as fallbacks for older banner styles.
+            let closed = performNamedCloseAction(on: element)
+                || pressCloseButton(in: element)
+                || AXUIElementPerformAction(element, kAXCancelAction as CFString) == .success
+            Self.logger.notice("Notetaker banner \(closed ? "dismissed" : "matched but not dismissable", privacy: .public): \(String(blob.prefix(120)), privacy: .public)")
             return
         }
 
@@ -98,8 +171,17 @@ final class NotificationWatcher {
         }
     }
 
-    private func isNotetakerPrompt(_ text: String) -> Bool {
-        patterns.contains { text.localizedCaseInsensitiveContains($0) }
+    /// A banner is a notetaker prompt when it contains a strong phrase, a weak
+    /// phrase together with a vendor marker, or a catalog vendor's identity
+    /// next to that vendor's own observed prompt copy. "Meeting notes" alone
+    /// is never dismissed, nor is a vendor's name next to unrelated copy.
+    ///
+    /// Deliberately not gated on meeting state: vendors fire these banners off
+    /// their own calendars and routinely beat Quiet's detector, which needs a
+    /// live call window first — a gate on isMeetingActive is exactly the
+    /// window the leaked banners used to arrive in.
+    func isNotetakerPrompt(_ text: String) -> Bool {
+        matcher.isNotetakerBanner(text)
     }
 
     private func elementTextBlob(_ element: AXUIElement) -> String {
@@ -110,6 +192,21 @@ final class NotificationWatcher {
         ]
         .compactMap { $0 }
         .joined(separator: " ")
+    }
+
+    /// Performs the element's own named close action — the action names on
+    /// macOS 26 banners are opaque descriptor strings ("…,Name:Close"), so
+    /// match by substring and pass the raw string back verbatim.
+    private func performNamedCloseAction(on element: AXUIElement) -> Bool {
+        var actionsRef: CFArray?
+        guard AXUIElementCopyActionNames(element, &actionsRef) == .success,
+              let actions = actionsRef as? [String] else { return false }
+        for action in actions where action.localizedCaseInsensitiveContains("close") {
+            if AXUIElementPerformAction(element, action as CFString) == .success {
+                return true
+            }
+        }
+        return false
     }
 
     private func pressCloseButton(in element: AXUIElement) -> Bool {

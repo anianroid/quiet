@@ -105,9 +105,32 @@
     "bundleIds": ["notion.id"],
     "helperProcessNames": [],
     "appNameHints": ["Notion"],
-    "notificationTitlePatterns": ["Take notes", "Meeting notes", "Notion AI"],
-    "notificationBodyPatterns": ["Take notes", "Meeting notes", "Notion AI", "Start taking notes"],
-    "policy": "ignore"
+    "notificationTitlePatterns": ["Take notes", "Meeting notes", "Notion AI", "Meeting starting"],
+    "notificationBodyPatterns": ["Take notes", "Meeting notes", "Notion AI", "Start taking notes", "Meeting starting"],
+    "policy": "ignore",
+    "popsMeetingPills": true
+  },
+  {
+    "id": "notion-calendar-notetaker",
+    "name": "Notion Calendar Notetaker",
+    "bundleIds": ["com.cron.electron"],
+    "helperProcessNames": [],
+    "appNameHints": ["Notion Calendar"],
+    "notificationTitlePatterns": ["Meeting detected", "Start Notetaker", "Notetaker"],
+    "notificationBodyPatterns": ["Start Notetaker", "Notetaker", "Meeting detected"],
+    "policy": "ignore",
+    "popsMeetingPills": true
+  },
+  {
+    "id": "wispr-flow-notetaker",
+    "name": "Wispr Flow",
+    "bundleIds": ["com.electron.wispr-flow", "com.electron.wispr-flow.accessibility-mac-app"],
+    "helperProcessNames": [],
+    "appNameHints": ["Wispr Flow", "Wispr"],
+    "notificationTitlePatterns": ["Meeting detected", "Start Notetaker", "Wispr", "Start Wispr", "Wispr Notetaker"],
+    "notificationBodyPatterns": ["Start Notetaker", "Meeting detected", "Notetaker", "Start Wispr", "Wispr Notetaker"],
+    "policy": "ignore",
+    "popsMeetingPills": true
   },
   {
     "id": "chrome-notetakers",

@@ -1,8 +1,8 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
-import EventKit
 import Foundation
+import os.log
 
 enum MeetingEvent: Sendable {
     case started(source: String)
@@ -10,9 +10,10 @@ enum MeetingEvent: Sendable {
 }
 
 /// Detects meetings the same way whether they're scheduled or impromptu:
-/// by the live call surface (Meet/Zoom/Teams window), not by calendar alone.
-/// Calendar is only a soft assist when the meeting app is already open.
+/// by the live call surface (Meet/Zoom/Teams window), never by calendar.
 actor MeetingDetector {
+    private static let logger = Logger(subsystem: "notes.quiet.app", category: "MeetingDetector")
+
     private let meetingBundleIds: Set<String> = [
         "us.zoom.xos",
         "com.microsoft.teams2",
@@ -22,18 +23,35 @@ actor MeetingDetector {
     ]
 
     private var wasInMeeting = false
+    private var lastSignalAt: Date = .distantPast
+
+    /// How long the meeting signal must be continuously absent before `.ended`
+    /// fires. Browser tab titles vanish when the user switches tabs; without
+    /// this debounce every tab switch would flap start/end. `.started` still
+    /// fires immediately — silencing must be instant.
+    private let endDebounceSeconds: TimeInterval = 20
 
     func events() -> AsyncStream<MeetingEvent> {
         AsyncStream { continuation in
             let task = Task {
+                // Fresh stream, fresh state — after pause()/resumeNow() during
+                // a still-running meeting, a stale `wasInMeeting` would
+                // suppress `.started` for the rest of that meeting.
+                self.wasInMeeting = false
+                self.lastSignalAt = .distantPast
                 while !Task.isCancelled {
                     let source = await self.detectSource()
-                    let inMeeting = source != nil
-                    if inMeeting, !self.wasInMeeting, let source {
-                        self.wasInMeeting = true
-                        continuation.yield(.started(source: source))
-                    } else if !inMeeting, self.wasInMeeting {
+                    if let source {
+                        self.lastSignalAt = Date()
+                        if !self.wasInMeeting {
+                            self.wasInMeeting = true
+                            Self.logger.info("Meeting started, source: \(source, privacy: .public)")
+                            continuation.yield(.started(source: source))
+                        }
+                    } else if self.wasInMeeting,
+                              Date().timeIntervalSince(self.lastSignalAt) >= self.endDebounceSeconds {
                         self.wasInMeeting = false
+                        Self.logger.info("Meeting ended (signal absent for \(Int(self.endDebounceSeconds))s)")
                         continuation.yield(.ended)
                     }
                     try? await Task.sleep(for: .milliseconds(500))
@@ -50,58 +68,88 @@ actor MeetingDetector {
             return browserMeet
         }
 
-        let running = NSWorkspace.shared.runningApplications
-
         // 2) Native meeting apps with an on-screen window.
-        for app in running {
+        for app in NSWorkspace.shared.runningApplications {
             if let bid = app.bundleIdentifier, meetingBundleIds.contains(bid) {
-                if appOwnsOnScreenWindow(bundleId: bid, ownerName: app.localizedName) {
+                if appIsInLiveMeeting(app, bundleID: bid) {
                     return app.localizedName ?? bid
                 }
-            }
-        }
-
-        // 3) Soft assist: calendar says a call is now + host app / browser is up
-        //    (covers scheduled Meet tabs whose title is just "Standup").
-        if let cal = await calendarMeetingHint() {
-            if running.contains(where: { meetingBundleIds.contains($0.bundleIdentifier ?? "") }) {
-                return cal.hostLabel
-            }
-            if cal.isBrowserMeet, running.contains(where: { isBrowser($0) }) {
-                return "Google Meet"
             }
         }
 
         return nil
     }
 
-    private func isBrowser(_ app: NSRunningApplication) -> Bool {
-        let bid = app.bundleIdentifier ?? ""
-        let name = (app.localizedName ?? "").lowercased()
-        return [
-            "com.google.Chrome",
-            "company.thebrowser.Browser",
-            "com.brave.Browser",
-            "com.microsoft.edgemac",
-            "com.apple.Safari",
-            "org.mozilla.firefox"
-        ].contains(bid)
-            || name.contains("chrome")
-            || name.contains("arc")
-            || name.contains("brave")
-            || name.contains("edge")
-            || name.contains("safari")
+    /// Zoom's home/login window is a tall window too — merely having Zoom
+    /// open must never count as a meeting. A live call is identified by its
+    /// window title; only when no titles are readable at all does the
+    /// tall-window heuristic apply, so detection never goes fully blind.
+    private func appIsInLiveMeeting(_ app: NSRunningApplication, bundleID: String) -> Bool {
+        guard bundleID == "us.zoom.xos" else {
+            return appOwnsOnScreenWindow(app)
+        }
+        let titles = windowTitles(for: app)
+        guard !titles.isEmpty else { return appOwnsOnScreenWindow(app) }
+        return titles.contains { zoomTitleIndicatesMeeting($0) }
+    }
+
+    /// `nonisolated` + internal so unit tests can exercise it directly.
+    /// "Zoom Workplace" (home), "Settings", and "Sign In" never match.
+    nonisolated func zoomTitleIndicatesMeeting(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return lower.contains("zoom meeting")
+            || lower.contains("zoom webinar")
+            || lower.contains("meeting controls")
+            || lower.contains("zoom share")
+    }
+
+    /// All readable window titles for one app — CG when Screen Recording is
+    /// granted, the app's own AX windows otherwise.
+    private func windowTitles(for app: NSRunningApplication) -> [String] {
+        let pid = app.processIdentifier
+        let opts = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+        var titles: [String] = []
+        if let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] {
+            for window in info {
+                guard (window[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                      let title = window[kCGWindowName as String] as? String,
+                      !title.isEmpty else { continue }
+                titles.append(title)
+            }
+        }
+        if !titles.isEmpty { return titles }
+
+        guard AXIsProcessTrusted() else { return [] }
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return [] }
+        for window in windows {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String, !title.isEmpty {
+                titles.append(title)
+            }
+        }
+        return titles
     }
 
     private func browserMeetingSignal() -> String? {
         // Pass 1: CG window list (works when Screen Recording is granted)
-        for (owner, title) in cgWindowTitles() {
+        let cgTitles = cgWindowTitles()
+        for (owner, title) in cgTitles {
             if let label = classifyMeetingWindow(owner: owner, title: title) {
                 return label
             }
         }
 
-        // Pass 2: Accessibility titles on browser processes (works with Accessibility)
+        // Pass 2 is a fallback for when window titles are invisible — without
+        // Screen Recording, CG reports every title as empty. Walking browser AX
+        // trees costs more than everything else Quiet does combined, so it only
+        // runs when pass 1 genuinely could not see, not merely when it found no
+        // meeting.
+        guard cgTitles.isEmpty else { return nil }
+
         for (owner, title) in axBrowserWindowTitles() {
             if let label = classifyMeetingWindow(owner: owner, title: title) {
                 return label
@@ -175,7 +223,9 @@ actor MeetingDetector {
         }
     }
 
-    private func classifyMeetingWindow(owner: String, title: String) -> String? {
+    /// Pure classification of a window (owner, title) into a meeting label.
+    /// `nonisolated` + internal so unit tests can exercise it directly.
+    nonisolated func classifyMeetingWindow(owner: String, title: String) -> String? {
         let ownerLower = owner.lowercased()
         let titleLower = title.lowercased()
         let isBrowser =
@@ -216,53 +266,49 @@ actor MeetingDetector {
         return nil
     }
 
-    private func appOwnsOnScreenWindow(bundleId: String, ownerName: String?) -> Bool {
+    /// True only when the app owns a real on-screen window (> 80 pt tall).
+    /// Never falls back to "the app is running" — an idle Zoom in the
+    /// background must not count as a meeting.
+    private func appOwnsOnScreenWindow(_ app: NSRunningApplication) -> Bool {
         let opts = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
         guard let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] else {
-            return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleId }
+            // CG window list unavailable (no Screen Recording) — fall back to
+            // the app's AX windows, not to "running".
+            return axAppOwnsTallWindow(app)
         }
-        let ownerCandidates = [ownerName, bundleId].compactMap { $0?.lowercased() }
+        let ownerCandidates = [app.localizedName, app.bundleIdentifier].compactMap { $0?.lowercased() }
         for window in info {
             let owner = ((window[kCGWindowOwnerName as String] as? String) ?? "").lowercased()
+            guard !owner.isEmpty else { continue }
             let height = (window[kCGWindowBounds as String] as? [String: Any])?["Height"] as? CGFloat ?? 0
             guard height > 80 else { continue }
-            if ownerCandidates.contains(where: { owner.contains($0) }) || owner.contains("zoom") || owner.contains("teams") {
+            if ownerCandidates.contains(where: { owner.contains($0) }) {
                 return true
             }
         }
-        return NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == bundleId }
+        return false
     }
 
-    private struct CalendarHint {
-        let isBrowserMeet: Bool
-        let hostLabel: String
-    }
+    /// AX fallback for `appOwnsOnScreenWindow`: asks the app itself for its
+    /// windows and applies the same > 80 pt height bar.
+    private func axAppOwnsTallWindow(_ app: NSRunningApplication) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
 
-    private func calendarMeetingHint() async -> CalendarHint? {
-        let store = EKEventStore()
-        let status = EKEventStore.authorizationStatus(for: .event)
-        guard status == .fullAccess else { return nil }
+        let appElement = AXUIElementCreateApplication(app.processIdentifier)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return false }
 
-        let now = Date()
-        let window = DateInterval(start: now.addingTimeInterval(-5 * 60), end: now.addingTimeInterval(5 * 60))
-        let predicate = store.predicateForEvents(withStart: window.start, end: window.end, calendars: nil)
-        let events = store.events(matching: predicate)
-
-        for event in events {
-            let blob = ((event.title ?? "") + " " + (event.notes ?? "") + " " + (event.location ?? "") + " " + (event.url?.absoluteString ?? "")).lowercased()
-            if blob.contains("meet.google") || blob.contains("meet.google.com") {
-                return CalendarHint(isBrowserMeet: true, hostLabel: "Google Meet")
-            }
-            if blob.contains("zoom.us") {
-                return CalendarHint(isBrowserMeet: false, hostLabel: "zoom.us")
-            }
-            if blob.contains("teams.microsoft") || blob.contains("teams.live.com") {
-                return CalendarHint(isBrowserMeet: false, hostLabel: "Microsoft Teams")
-            }
-            if blob.contains("webex") {
-                return CalendarHint(isBrowserMeet: false, hostLabel: "Webex")
+        for window in windows {
+            var sizeRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(window, kAXSizeAttribute as CFString, &sizeRef) == .success,
+                  let raw = sizeRef,
+                  CFGetTypeID(raw) == AXValueGetTypeID() else { continue }
+            var size = CGSize.zero
+            if AXValueGetValue(raw as! AXValue, .cgSize, &size), size.height > 80 {
+                return true
             }
         }
-        return nil
+        return false
     }
 }

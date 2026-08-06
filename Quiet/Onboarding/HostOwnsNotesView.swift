@@ -6,6 +6,7 @@ import SwiftUI
 /// (Zoom AI Companion, Notion AI notes). Quiet never quits those host apps.
 struct HostOwnsNotesView: View {
     @EnvironmentObject private var appState: AppState
+    @State private var wisprBusy = false
     var showsContinue: Bool = false
     var onContinue: (() -> Void)?
 
@@ -14,7 +15,7 @@ struct HostOwnsNotesView: View {
             Text("Quiet owns notes")
                 .font(.title3.weight(.medium))
 
-            Text("Sidecar apps (Granola, Fireflies…) are force-quit automatically. Zoom and Notion stay open — turn off their built-in Take notes prompts once.")
+            Text("Sidecar apps (Granola, Fireflies…) are quit automatically during meetings and free to use otherwise. Zoom and Notion stay open — turn off their built-in Take notes prompts once.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -42,7 +43,24 @@ struct HostOwnsNotesView: View {
                 )
             }
 
-            if !appState.isZoomInstalled && !appState.isNotionInstalled {
+            if appState.isNotionCalendarInstalled {
+                hostCard(
+                    title: "Notion Calendar Notetaker",
+                    steps: "Open Notion Calendar → Settings → Notetaker (or Meetings) → turn off the automatic “Start Notetaker” pill for detected meetings.",
+                    done: appState.hostNotionCalendarNotesDisabled,
+                    openTitle: "Open Notion Calendar",
+                    open: { appState.openNotionCalendarForHostSetup() },
+                    onMarkDone: { appState.hostNotionCalendarNotesDisabled = true },
+                    onUndo: { appState.hostNotionCalendarNotesDisabled = false }
+                )
+            }
+
+            if appState.isWisprInstalled {
+            wisprCard
+        }
+
+        if !appState.isZoomInstalled && !appState.isNotionInstalled
+            && !appState.isNotionCalendarInstalled && !appState.isWisprInstalled {
                 ContentUnavailableView(
                     "No Zoom or Notion found",
                     systemImage: "checkmark.seal",
@@ -72,6 +90,54 @@ struct HostOwnsNotesView: View {
                 }
             }
         }
+    }
+
+    /// Wispr's step is the one host Quiet can do itself: its meeting
+    /// detection lives in a JSON config, so this is a button, not a
+    /// walkthrough. Wispr restarts once; dictation is untouched.
+    private var wisprCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Image(systemName: appState.wisprNotesSilenced ? "checkmark.circle.fill" : "bell.badge")
+                    .foregroundStyle(appState.wisprNotesSilenced ? .green : .orange)
+                Text("Wispr Flow Notetaker")
+                    .font(.body.weight(.semibold))
+                Spacer()
+                if appState.wisprNotesSilenced {
+                    Text("Done")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Text("Wispr watches for meetings and pops a “Start Notetaker” pill. Quiet can turn that off in Wispr's own settings — dictation keeps working. Wispr restarts once.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if !appState.wisprNotesSilenced {
+                Button(wisprBusy ? "Silencing…" : "Silence automatically") {
+                    wisprBusy = true
+                    Task {
+                        await appState.setWisprNotetakerSilenced(true)
+                        wisprBusy = false
+                    }
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(wisprBusy)
+            } else {
+                Button("Undo") {
+                    wisprBusy = true
+                    Task {
+                        await appState.setWisprNotetakerSilenced(false)
+                        wisprBusy = false
+                    }
+                }
+                .font(.caption)
+                .disabled(wisprBusy)
+            }
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color(nsColor: .controlBackgroundColor)))
     }
 
     private func hostCard(

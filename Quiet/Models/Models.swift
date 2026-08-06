@@ -15,6 +15,10 @@ struct CompetitorEntry: Codable, Identifiable, Hashable, Sendable {
     let notificationTitlePatterns: [String]
     let notificationBodyPatterns: [String]
     let policy: CompetitorPolicy
+    /// True for host apps that pop meeting pills but must never be quit or
+    /// suspended (the user's workspace, a dictation tool) — only their
+    /// pill-sized floating windows are suppressed during meetings.
+    var popsMeetingPills: Bool? = nil
 }
 
 struct InstalledCompetitor: Identifiable, Hashable, Sendable {
@@ -42,12 +46,28 @@ struct HijackAction: Identifiable, Hashable, Sendable {
     let at: Date
 }
 
+/// Which side of the call a transcript segment came from.
+/// System audio is everyone else on the call; the mic is the user.
+enum TranscriptSource: String, Codable, Sendable {
+    case system
+    case mic
+
+    /// Speaker prefix used when rendering the transcript.
+    var speakerLabel: String {
+        switch self {
+        case .system: return "Them"
+        case .mic: return "Me"
+        }
+    }
+}
+
 struct TranscriptSegment: Identifiable, Hashable, Sendable {
     let id = UUID()
     let start: TimeInterval
     let end: TimeInterval
     let text: String
     let isFinal: Bool
+    let source: TranscriptSource
 }
 
 struct MeetingSummary: Hashable, Sendable {
@@ -55,6 +75,8 @@ struct MeetingSummary: Hashable, Sendable {
     var decisions: [String]
     var actions: [String]
     var questions: [String]
+    /// Short model-generated meeting title; nil when Apple Intelligence is unavailable.
+    var title: String? = nil
 }
 
 struct MeetingSession: Identifiable, Hashable, Sendable {

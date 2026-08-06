@@ -32,8 +32,7 @@ struct CompetitorScanner: Sendable {
                     matchedPath = matchedPath ?? app.bundleURL?.path
                 }
                 if let name = app.localizedName,
-                   entry.helperProcessNames.contains(where: { name.localizedCaseInsensitiveContains($0) })
-                    || entry.appNameHints.contains(where: { name.localizedCaseInsensitiveContains($0) }) {
+                   NameTokenMatcher.name(name, matchesAnyOf: entry.helperProcessNames + entry.appNameHints) {
                     isRunning = true
                     matchedPath = matchedPath ?? app.bundleURL?.path
                 }
@@ -68,7 +67,7 @@ struct CompetitorScanner: Sendable {
             guard let contents = try? FileManager.default.contentsOfDirectory(atPath: root) else { continue }
             for item in contents where item.hasSuffix(".app") {
                 let name = (item as NSString).deletingPathExtension
-                if hints.contains(where: { name.localizedCaseInsensitiveContains($0) }) {
+                if NameTokenMatcher.name(name, matchesAnyOf: hints) {
                     return root + "/" + item
                 }
             }

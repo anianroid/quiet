@@ -36,8 +36,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppState.shared.quietBanner.show(message: msg, duration: 5)
                 AppState.shared.statusMessage = msg
                 AppState.shared.refreshPermissions()
+                // startMonitoring already armed both watchers; this re-asserts
+                // Notification Center after the Accessibility prompt settles.
                 if ax, AppState.shared.dismissBannersEnabled {
                     AppState.shared.notificationWatcher.start()
+                    AppState.shared.hostOverlayWatcher.start()
+                }
+
+                // Screen Recording backs both note capture and reading prompts
+                // that expose no Accessibility text. macOS silently invalidates
+                // the grant whenever the binary changes, so ask again when the
+                // preflight says it is missing.
+                if !CGPreflightScreenCaptureAccess() {
+                    CGRequestScreenCaptureAccess()
                 }
             }
         }
