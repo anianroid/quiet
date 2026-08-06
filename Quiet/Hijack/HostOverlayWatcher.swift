@@ -149,9 +149,11 @@ final class HostOverlayWatcher {
     /// Per-window backoff so a failing suppression ladder is retried every
     /// couple of seconds, not at sweep cadence.
     private var lastSuppressAttempt: [CGWindowID: Date] = [:]
-    /// How many times each window has needed suppressing. A window that keeps
-    /// coming back is a host re-anchoring it, and gets met at full cadence.
-    private var suppressAttempts: [CGWindowID: Int] = [:]
+    /// How many times each *app* has needed suppressing this meeting. Keyed by
+    /// pid, not window: Notion recreates its pill under a fresh CGWindowID
+    /// every few seconds, so a per-window counter reset every time and each
+    /// new pill got the backoff — which is exactly the flash the user sees.
+    private var suppressAttemptsByPID: [pid_t: Int] = [:]
     /// Containers already logged as "confirming via pixels" — once per
     /// sighting, not once per 30ms tick.
     private var announcedContainers: Set<CGWindowID> = []
@@ -350,7 +352,7 @@ final class HostOverlayWatcher {
         }
         pruneVerdicts(seen: ids)
         lastSuppressAttempt = lastSuppressAttempt.filter { ids.contains($0.key) }
-        suppressAttempts = suppressAttempts.filter { ids.contains($0.key) }
+
         announcedContainers.formIntersection(ids)
     }
 
@@ -462,19 +464,22 @@ final class HostOverlayWatcher {
         }
         let label = identity.name.isEmpty ? bundleID : identity.name
 
-        // Hosts that re-anchor a parked window (Notion re-shows its pill every
-        // ~3s for as long as its own setting is on) must be met at sweep
-        // cadence, or each re-anchor is a visible flash. Everything else backs
-        // off, because AX calls to a stuck Electron process are not free.
+        // Hosts that re-anchor or recreate their pill (Notion re-shows its
+        // prompt every ~3s for as long as its own setting is on) are met at
+        // full sweep cadence, or every re-appearance is a visible flash. Known
+        // pill hosts skip the backoff from the first sighting; anything else
+        // earns full cadence after it has come back twice. The backoff exists
+        // only so AX calls to a stuck Electron process aren't made per tick.
         let now = Date()
-        let isRepeatOffender = suppressAttempts[candidate.windowID, default: 0] >= 2
-        if !isRepeatOffender,
+        let knownHost = hostPillBundleIds.contains(bundleID)
+        let repeatOffender = suppressAttemptsByPID[candidate.pid, default: 0] >= 2
+        if !knownHost, !repeatOffender,
            let last = lastSuppressAttempt[candidate.windowID],
            now.timeIntervalSince(last) < 2 {
             return
         }
         lastSuppressAttempt[candidate.windowID] = now
-        suppressAttempts[candidate.windowID, default: 0] += 1
+        suppressAttemptsByPID[candidate.pid, default: 0] += 1
 
         if candidate.kind == .container {
             // Nothing is ever drawn over the user's screen. A container pill
@@ -557,7 +562,7 @@ final class HostOverlayWatcher {
         }
         hiddenHosts.removeAll()
         lastSuppressAttempt.removeAll()
-        suppressAttempts.removeAll()
+        suppressAttemptsByPID.removeAll()
         announcedContainers.removeAll()
     }
 

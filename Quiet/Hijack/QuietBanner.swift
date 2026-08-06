@@ -298,14 +298,20 @@ struct IslandRootView: View {
             if notch.hasNotch {
                 NotchWrapSurface(notch: notch) {
                     HStack(spacing: 7) {
-                        if capturing {
-                            StatusDot(recording: true)
-                        }
+                        // The mark is the status indicator: red on black, so it
+                        // reads against the menu bar where dim bars alone did
+                        // not. It turns while guarding, faster while recording.
+                        KamuiMark(size: 15, ambient: true, fast: capturing)
                         WaveformBars(active: capturing)
                     }
                 } trailing: {
-                    if let startedAt = model.meetingStartedAt {
-                        ElapsedTime(since: startedAt)
+                    HStack(spacing: 7) {
+                        if capturing {
+                            StatusDot(recording: true)
+                        }
+                        if let startedAt = model.meetingStartedAt {
+                            ElapsedTime(since: startedAt)
+                        }
                     }
                 }
             } else {
@@ -471,17 +477,22 @@ private struct ExpandedSurface<Content: View>: View {
 struct KamuiMark: View {
     var size: CGFloat = 16
     var ambient = false
+    /// Recording turns the mark faster — the island's motion tells you the
+    /// state before you read anything on it.
+    var fast = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var spun = false
 
     /// One ambient revolution takes this long — present, never distracting.
     private static let ambientPeriod: TimeInterval = 18
+    private static let recordingPeriod: TimeInterval = 6
 
     var body: some View {
         if ambient, !reduceMotion {
+            let period = fast ? Self.recordingPeriod : Self.ambientPeriod
             TimelineView(.animation(minimumInterval: 1 / 30)) { context in
                 let turn = context.date.timeIntervalSinceReferenceDate
-                    .truncatingRemainder(dividingBy: Self.ambientPeriod) / Self.ambientPeriod
+                    .truncatingRemainder(dividingBy: period) / period
                 mark.rotationEffect(.degrees(turn * 360))
             }
         } else {
@@ -533,10 +544,11 @@ private struct MeetingContent: View {
 
     var body: some View {
         HStack(spacing: 9) {
+            KamuiMark(size: 15, ambient: true, fast: capturing)
+            WaveformBars(active: capturing)
             if capturing {
                 StatusDot(recording: true)
             }
-            WaveformBars(active: capturing)
             if let startedAt {
                 ElapsedTime(since: startedAt)
             }
@@ -587,7 +599,7 @@ private struct WaveformBars: View {
             HStack(spacing: 2.5) {
                 ForEach(0..<5, id: \.self) { i in
                     Capsule()
-                        .fill(active ? Color.white : Color.white.opacity(0.45))
+                        .fill(active ? Color.white : Color.white.opacity(0.7))
                         .frame(width: 2.5, height: height(bar: i, time: t, animating: animating))
                 }
             }
