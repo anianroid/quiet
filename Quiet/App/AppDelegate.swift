@@ -25,13 +25,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
                 let msg: String
                 if ax {
-                    if AppState.shared.hostOwnsNotesComplete {
-                        msg = "Quiet is armed"
-                    } else {
-                        msg = "Quiet armed — finish Quiet owns notes in Settings"
-                    }
+                    msg = AppState.shared.hostOwnsNotesComplete
+                        ? "Armed"
+                        : "Armed — finish setup in Settings"
                 } else {
-                    msg = "Turn ON Quiet in Settings → Privacy & Security → Accessibility"
+                    msg = "Turn on Kamui in System Settings → Accessibility"
                 }
                 AppState.shared.quietBanner.show(message: msg, duration: 5)
                 AppState.shared.statusMessage = msg
@@ -75,7 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             backing: .buffered,
             defer: false
         )
-        window.title = "Quiet Setup"
+        window.title = "Kamui Setup"
         window.contentView = NSHostingView(rootView: root)
         window.center()
         window.isReleasedWhenClosed = false

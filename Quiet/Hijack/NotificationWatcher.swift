@@ -152,7 +152,7 @@ final class NotificationWatcher {
         guard depth < 10 else { return }
 
         let blob = elementTextBlob(element)
-        if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Quiet") {
+        if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Kamui") {
             // macOS 26 banners expose a custom named Close action (not AXPress
             // on a close button, not AXCancel) — perform it verbatim, with the
             // legacy paths kept as fallbacks for older banner styles.

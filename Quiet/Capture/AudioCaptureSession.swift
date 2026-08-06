@@ -80,7 +80,7 @@ final class AudioCaptureSession: @unchecked Sendable {
 
         let outputUID = try Self.defaultOutputDeviceUID()
         let description: [String: Any] = [
-            kAudioAggregateDeviceNameKey: "Quiet System Audio",
+            kAudioAggregateDeviceNameKey: "Kamui System Audio",
             kAudioAggregateDeviceUIDKey: UUID().uuidString,
             kAudioAggregateDeviceMainSubDeviceKey: outputUID,
             kAudioAggregateDeviceIsPrivateKey: true,
@@ -136,7 +136,7 @@ final class AudioCaptureSession: @unchecked Sendable {
             AudioHardwareDestroyAggregateDevice(aggregateID)
             AudioHardwareDestroyProcessTap(tapID)
             throw AudioCaptureError.failedToStart(
-                "AudioDeviceStart status \(startStatus). Allow system audio for Quiet if prompted, then retry."
+                "AudioDeviceStart status \(startStatus). Allow system audio for Kamui if prompted, then retry."
             )
         }
 

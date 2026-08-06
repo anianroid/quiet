@@ -49,7 +49,7 @@ struct MenuBarView: View {
                 appState.resumeNow()
             }
         } else {
-            Button("Pause Quiet for 1 hour") {
+            Button("Pause Kamui for 1 hour") {
                 appState.pause()
             }
         }
@@ -61,16 +61,16 @@ struct MenuBarView: View {
         }
 
         if !appState.hostOwnsNotesComplete {
-            Button("Quiet owns notes…") {
+            Button("Kamui owns notes…") {
                 openWindow(id: "settings")
             }
         }
 
-        Button("Quit & reopen Quiet") {
+        Button("Quit & reopen Kamui") {
             relaunchQuiet()
         }
 
-        Button("Quit Quiet") {
+        Button("Quit Kamui") {
             NSApp.terminate(nil)
         }
     }

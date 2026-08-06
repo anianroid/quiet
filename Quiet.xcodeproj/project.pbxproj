@@ -542,7 +542,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = notes.quiet.app;
-				PRODUCT_NAME = Quiet;
+				PRODUCT_NAME = Kamui;
 				SDKROOT = macosx;
 			};
 			name = Release;
@@ -633,7 +633,7 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/../Frameworks";
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = notes.quiet.app;
-				PRODUCT_NAME = Quiet;
+				PRODUCT_NAME = Kamui;
 				SDKROOT = macosx;
 			};
 			name = Debug;
