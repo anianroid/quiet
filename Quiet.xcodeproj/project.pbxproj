@@ -25,6 +25,7 @@
 		4342ED222A2303AF9FAEBB04 /* QuietBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3793E4823A62BA68364F2BD2 /* QuietBanner.swift */; };
 		4700EDF0BE37359923090D66 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6C677A4448109AEEB1FB938 /* Models.swift */; };
 		47B3D08163968DAC40F500C2 /* MeetingDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */; };
+		A7C1E4B2D9F3086A5B2C7D41 /* HostOverlayWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */; };
 		4B4BC00CA8D941E8F575CE3C /* MergeTranscriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */; };
 		5108D04D87533D2693E930DE /* TranscriptionAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE7BE1C01CC3F8594418F32 /* TranscriptionAssets.swift */; };
 		57FEE1EA751146736CEA53EA /* QuietBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3793E4823A62BA68364F2BD2 /* QuietBanner.swift */; };
@@ -49,6 +50,8 @@
 		B99CF415BBA1806B3242AF64 /* NotificationWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F1F497130E0863EA028C45E /* NotificationWatcherTests.swift */; };
 		BA6D2D43F8DA0FE7174DD512 /* NotetakerPhrases.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67916006F374C5588CE214BB /* NotetakerPhrases.swift */; };
 		C3DDF8D1DD096C03BB401517 /* NotetakerPhrases.swift in Sources */ = {isa = PBXBuildFile; fileRef = 67916006F374C5588CE214BB /* NotetakerPhrases.swift */; };
+		D4E8A1B7C2F5093E6A7B8C21 /* WisprSilencer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2A9C5D8E1B4076F3C8D9A42 /* WisprSilencer.swift */; };
+		E9B3D6C1A8F2054D7E1C4B83 /* WisprSilencer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F2A9C5D8E1B4076F3C8D9A42 /* WisprSilencer.swift */; };
 		C6975D89FAC55A15F0D74C1F /* NotificationWatcher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 445BD78022F6651A2E0E06E4 /* NotificationWatcher.swift */; };
 		CF98C3373B6F5E0D2C7E7894 /* NotetakerPhrasesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D01D60CE4BA09CD709D0CA11 /* NotetakerPhrasesTests.swift */; };
 		D3F7C4489247F2E1A673360F /* NotesStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 124D0E5C7CD5BC175B3FC949 /* NotesStore.swift */; };
@@ -85,12 +88,14 @@
 		4F1F497130E0863EA028C45E /* NotificationWatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotificationWatcherTests.swift; sourceTree = "<group>"; };
 		5ACBFF6694821854120926FE /* BufferConverter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BufferConverter.swift; sourceTree = "<group>"; };
 		67916006F374C5588CE214BB /* NotetakerPhrases.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotetakerPhrases.swift; sourceTree = "<group>"; };
+		F2A9C5D8E1B4076F3C8D9A42 /* WisprSilencer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WisprSilencer.swift; sourceTree = "<group>"; };
 		7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostOverlayWatcher.swift; sourceTree = "<group>"; };
 		830A260E8725D303E58B60A3 /* AudioCaptureSession.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AudioCaptureSession.swift; sourceTree = "<group>"; };
 		8A8537A0F7220162F9CE79B2 /* CompetitorWatchdog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompetitorWatchdog.swift; sourceTree = "<group>"; };
 		8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeTranscriptTests.swift; sourceTree = "<group>"; };
 		9869A705BCA54FAC09C24858 /* MeetingDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetector.swift; sourceTree = "<group>"; };
 		9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetectorTests.swift; sourceTree = "<group>"; };
+		E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostOverlayWatcherTests.swift; sourceTree = "<group>"; };
 		9C967BF53C03975C920EB390 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
 		9DE7BE1C01CC3F8594418F32 /* TranscriptionAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionAssets.swift; sourceTree = "<group>"; };
 		A0550FF8552900CA6AB5008A /* Quiet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quiet.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -161,6 +166,7 @@
 		5CBA58C603F961E8E38D8819 /* QuietTests */ = {
 			isa = PBXGroup;
 			children = (
+				E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */,
 				9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */,
 				8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */,
 				E34F841694802177A85A5A99 /* NameTokenMatcherTests.swift */,
@@ -220,6 +226,7 @@
 				8A8537A0F7220162F9CE79B2 /* CompetitorWatchdog.swift */,
 				7FC3BEF1367AE0B6FFFDCD03 /* HostOverlayWatcher.swift */,
 				67916006F374C5588CE214BB /* NotetakerPhrases.swift */,
+				F2A9C5D8E1B4076F3C8D9A42 /* WisprSilencer.swift */,
 				445BD78022F6651A2E0E06E4 /* NotificationWatcher.swift */,
 				41DAEC984A4B9380EC024EAE /* ProcessController.swift */,
 				3793E4823A62BA68364F2BD2 /* QuietBanner.swift */,
@@ -381,6 +388,7 @@
 				D3F7C4489247F2E1A673360F /* NotesStore.swift in Sources */,
 				EFDF22645CBCDA7AAB78CEEE /* NotesSummarizer.swift in Sources */,
 				C3DDF8D1DD096C03BB401517 /* NotetakerPhrases.swift in Sources */,
+				E9B3D6C1A8F2054D7E1C4B83 /* WisprSilencer.swift in Sources */,
 				C6975D89FAC55A15F0D74C1F /* NotificationWatcher.swift in Sources */,
 				E5632B14DDE16027B94EE78D /* OnboardingViews.swift in Sources */,
 				105139520D855ACEFB447D85 /* ProcessController.swift in Sources */,
@@ -405,6 +413,7 @@
 				6659C53675B36124D0B07A8F /* HostOverlayWatcher.swift in Sources */,
 				D422AAB315A2D3328FEEE866 /* HostOwnsNotesView.swift in Sources */,
 				78D7379FEFB4E8020D801EDD /* MeetingDetector.swift in Sources */,
+				A7C1E4B2D9F3086A5B2C7D41 /* HostOverlayWatcherTests.swift in Sources */,
 				47B3D08163968DAC40F500C2 /* MeetingDetectorTests.swift in Sources */,
 				DA4137C5D4475AEF456BB20C /* MeetingTranscriber.swift in Sources */,
 				1472660874BCAFC1F0EDBFD4 /* MenuSettingsNotes.swift in Sources */,
@@ -416,6 +425,7 @@
 				2BB946217BF962F24A352F7D /* NotesSummarizer.swift in Sources */,
 				1F47BCCB35394FBC0C59AB4C /* NotesSummarizerTests.swift in Sources */,
 				BA6D2D43F8DA0FE7174DD512 /* NotetakerPhrases.swift in Sources */,
+				D4E8A1B7C2F5093E6A7B8C21 /* WisprSilencer.swift in Sources */,
 				CF98C3373B6F5E0D2C7E7894 /* NotetakerPhrasesTests.swift in Sources */,
 				B5DAE69F985C86B4D1D46E16 /* NotificationWatcher.swift in Sources */,
 				B99CF415BBA1806B3242AF64 /* NotificationWatcherTests.swift in Sources */,

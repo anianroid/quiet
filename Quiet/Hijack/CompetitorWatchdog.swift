@@ -2,8 +2,10 @@ import AppKit
 import Foundation
 import os.log
 
-/// Keeps known notetaker sidecars quit **while Quiet is armed**.
-/// Solves the race where Granola/Fireflies notify before a meeting-start kill.
+/// Keeps known notetaker sidecars quit **for the duration of a meeting** —
+/// respawning Login Items and late launches included. Never armed outside a
+/// meeting: the user is free to open and use any notetaker between calls,
+/// and only its meeting prompts are suppressed (banner + overlay layers).
 @MainActor
 final class CompetitorWatchdog {
     private let processController: ProcessController

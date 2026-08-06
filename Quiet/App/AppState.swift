@@ -14,13 +14,18 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(hasCompletedOnboarding, forKey: Keys.onboarding) }
     }
 
-    /// Force-quit Otter/Granola/Fireflies while Quiet is armed. Safe — no Accessibility UI walking.
+    /// Hold Otter/Granola/Fireflies quit **during meetings only**. Outside a
+    /// meeting every app runs freely — the user may open any notetaker; only
+    /// its meeting prompts are suppressed (banner + overlay layers).
     @Published var quitCompetitorsEnabled: Bool {
         didSet {
             UserDefaults.standard.set(quitCompetitorsEnabled, forKey: Keys.quitCompetitors)
-            // Re-arm / disarm watchdog when the toggle flips while monitoring.
-            if hasCompletedOnboarding {
-                startMonitoring()
+            // The watchdog only ever runs during a live meeting.
+            guard isMeetingActive else { return }
+            if quitCompetitorsEnabled {
+                armCompetitorWatchdog()
+            } else {
+                competitorWatchdog.stop()
             }
         }
     }
@@ -48,6 +53,11 @@ final class AppState: ObservableObject {
     @Published var hostNotionCalendarNotesDisabled: Bool {
         didSet { UserDefaults.standard.set(hostNotionCalendarNotesDisabled, forKey: Keys.hostNotionCalendar) }
     }
+
+    /// One-time: Wispr Flow's meeting auto-detection turned off. Read from
+    /// Wispr's own config (not a stored flag) so it survives reinstalls and
+    /// reflects changes made inside Wispr itself.
+    @Published var wisprNotesSilenced = false
 
     /// While paused Quiet stops guarding entirely — watchdog, banner dismissal,
     /// and meeting detection are off until `pausedUntil` (or Resume now).
@@ -134,12 +144,29 @@ final class AppState: ObservableObject {
             || FileManager.default.fileExists(atPath: "/Applications/Notion Calendar.app")
     }
 
+    var isWisprInstalled: Bool { WisprSilencer.isInstalled }
+
     /// True when every installed host that can spam Take notes is marked done.
     var hostOwnsNotesComplete: Bool {
         let zoomOK = !isZoomInstalled || hostZoomNotesDisabled
         let notionOK = !isNotionInstalled || hostNotionNotesDisabled
         let notionCalOK = !isNotionCalendarInstalled || hostNotionCalendarNotesDisabled
-        return zoomOK && notionOK && notionCalOK
+        let wisprOK = !isWisprInstalled || wisprNotesSilenced
+        return zoomOK && notionOK && notionCalOK && wisprOK
+    }
+
+    func refreshWisprSilenced() {
+        wisprNotesSilenced = WisprSilencer.isSilenced() ?? false
+    }
+
+    /// Flips Wispr's meeting detection at the source (its own config) —
+    /// quits, patches, relaunches. Dictation is untouched.
+    func setWisprNotetakerSilenced(_ silenced: Bool) async {
+        let landed = await WisprSilencer.setSilenced(silenced)
+        refreshWisprSilenced()
+        statusMessage = landed
+            ? (silenced ? "Wispr notetaker silenced at the source" : "Wispr notetaker re-enabled")
+            : "Couldn't update Wispr's settings — is it installed?"
     }
 
     private init() {
@@ -147,7 +174,7 @@ final class AppState: ObservableObject {
         self.scanner = CompetitorScanner(catalog: catalog)
         self.processController = ProcessController(catalog: catalog)
         self.notificationWatcher = NotificationWatcher(catalog: catalog)
-        self.hostOverlayWatcher = HostOverlayWatcher()
+        self.hostOverlayWatcher = HostOverlayWatcher(catalog: catalog)
         self.quietBanner = QuietBannerController()
         self.meetingDetector = MeetingDetector()
         self.audioCapture = AudioCaptureSession()
@@ -168,6 +195,7 @@ final class AppState: ObservableObject {
         UserDefaults.standard.removeObject(forKey: "quiet.hijackEnabled")
 
         refreshPermissions()
+        refreshWisprSilenced()
         installedCompetitors = scanner.scan()
         lastScanAt = Date()
         recoverOrphanedTranscripts()
@@ -221,6 +249,10 @@ final class AppState: ObservableObject {
         if isZoomInstalled { hostZoomNotesDisabled = true }
         if isNotionInstalled { hostNotionNotesDisabled = true }
         if isNotionCalendarInstalled { hostNotionCalendarNotesDisabled = true }
+        // Wispr's step is automatable — do it rather than mark it.
+        if isWisprInstalled, !wisprNotesSilenced {
+            Task { await setWisprNotetakerSilenced(true) }
+        }
     }
 
     func rescanCompetitors() {
@@ -244,19 +276,11 @@ final class AppState: ObservableObject {
         guard !isPaused else { return }
         detectorTask?.cancel()
 
-        // Keep sidecars dead the whole time Quiet is armed — not only after Meet starts.
-        if quitCompetitorsEnabled {
-            competitorWatchdog.start { [weak self] actions in
-                guard let self else { return }
-                self.recordHijackActions(actions)
-                let names = Array(Set(actions.map(\.competitorName))).sorted().joined(separator: ", ")
-                if !self.isMeetingActive {
-                    self.statusMessage = "Holding off: \(names)"
-                }
-            }
-        } else {
-            competitorWatchdog.stop()
-        }
+        // Competitors are held down only while a meeting is live — outside
+        // meetings the user is free to open and use any notetaker, and only
+        // its meeting prompts get suppressed. Ensure nothing is left armed
+        // from a previous state.
+        competitorWatchdog.stop()
 
         if dismissBannersEnabled {
             notificationWatcher.start()
@@ -378,11 +402,14 @@ final class AppState: ObservableObject {
             if !names.isEmpty {
                 statusMessage = "Meeting detected — silenced \(names)"
             }
+            // Hold respawns and late launches down for the rest of the meeting.
+            armCompetitorWatchdog()
         }
 
         if dismissBannersEnabled {
             notificationWatcher.start()
             hostOverlayWatcher.start()
+            notificationWatcher.setMeetingActive(true)
             hostOverlayWatcher.setMeetingActive(true)
         }
 
@@ -562,11 +589,23 @@ final class AppState: ObservableObject {
         }
     }
 
+    /// Holds competitors down for the duration of a meeting — respawns and
+    /// late launches included. Never runs outside one.
+    private func armCompetitorWatchdog() {
+        competitorWatchdog.start { [weak self] actions in
+            guard let self else { return }
+            self.recordHijackActions(actions)
+            self.currentSession?.hijackLog.append(contentsOf: actions)
+        }
+    }
+
     private func handleMeetingEnded() async {
         guard isMeetingActive else { return }
         isMeetingActive = false
         isCapturing = false
+        competitorWatchdog.stop()
         hostOverlayWatcher.setMeetingActive(false)
+        notificationWatcher.setMeetingActive(false)
         quietBanner.hide()
 
         // A pipeline still starting up must not finish arming after the end.

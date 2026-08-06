@@ -1,4 +1,5 @@
 import AppKit
+import CoreGraphics
 import SwiftUI
 
 /// Classic menu-bar dropdown (not the notch island).
@@ -92,13 +93,13 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Form {
-                Toggle("Force-quit competing notetakers while Quiet runs", isOn: $appState.quitCompetitorsEnabled)
+                Toggle("Hold competing notetakers quit during meetings", isOn: $appState.quitCompetitorsEnabled)
                 Text("Quits Granola / Fireflies / Otter / Fathom (and helpers). Never quits Zoom, Chrome, or Notion.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
                 Toggle("Dismiss Zoom/notetaker banners in Notification Center", isOn: $appState.dismissBannersEnabled)
-                Text("Accessibility, Notification Center only — backup for host Take notes prompts.")
+                Text("Also hides in-app pills (Notion, Wispr). Needs Accessibility; Screen Recording helps for AX-blind apps.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
@@ -111,7 +112,7 @@ struct SettingsView: View {
 
                 Section("Permissions") {
                     LabeledContent("Screen & System Audio") {
-                        Text(appState.permissionSnapshot.screenRecording ? "Granted" : "Missing")
+                        Text(appState.permissionSnapshot.screenRecording ? "Granted" : "Missing — needed to hide Wispr pills")
                     }
                     LabeledContent("Microphone") {
                         Text(appState.permissionSnapshot.microphone ? "Granted" : "Missing")
@@ -120,6 +121,12 @@ struct SettingsView: View {
                         Text(appState.permissionSnapshot.accessibility ? "Granted" : "Missing")
                     }
                     Button("Refresh permissions") { appState.refreshPermissions() }
+                    if !appState.permissionSnapshot.screenRecording {
+                        Button("Grant Screen Recording") {
+                            CGRequestScreenCaptureAccess()
+                            appState.refreshPermissions()
+                        }
+                    }
                 }
 
                 Section("This session") {
