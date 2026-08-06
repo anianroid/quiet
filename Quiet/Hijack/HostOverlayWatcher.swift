@@ -139,11 +139,24 @@ final class HostOverlayWatcher {
     /// meeting started — dictation HUDs, not prompts.
     private var persistentBeforeMeeting: Set<CGWindowID> = []
 
-    /// Containers parked off-screen during a meeting, with the position to
-    /// restore at meeting end. Parking is the no-drawing suppression: the
-    /// whole transparent container (pill included) moves off every display.
-    /// Nothing is ever painted over the user's screen.
-    private var parked: [CGWindowID: (window: AXUIElement, original: CGPoint)] = [:]
+    /// Windows parked during a meeting, with everything needed to put them
+    /// back. Parking is the no-drawing suppression: nothing is ever painted
+    /// over the user's screen; the offending window is moved off every display
+    /// *and* collapsed to a pixel.
+    ///
+    /// Collapsing is what ends the swatting war. Hosts re-show their prompt on
+    /// a timer (Notion re-anchors or recreates its pill every ~3s for as long
+    /// as its own setting is on), and a re-anchor only rewrites the position —
+    /// so a window left at 1x1 comes back invisible, with no per-vendor
+    /// knowledge and no fight. Both position and size are restored when the
+    /// meeting ends.
+    private struct ParkedWindow {
+        let window: AXUIElement
+        let pid: pid_t
+        let position: CGPoint
+        let size: CGSize
+    }
+    private var parked: [CGWindowID: ParkedWindow] = [:]
     /// Host apps hidden as the last rung — unhidden at meeting end.
     private var hiddenHosts: Set<pid_t> = []
     /// Per-window backoff so a failing suppression ladder is retried every
@@ -264,11 +277,18 @@ final class HostOverlayWatcher {
     private func ensureObserver(for pid: pid_t) {
         guard observers[pid] == nil else { return }
 
-        let callback: AXObserverCallback = { _, _, _, refcon in
+        let callback: AXObserverCallback = { _, element, _, refcon in
             guard let refcon else { return }
             let watcher = Unmanaged<HostOverlayWatcher>.fromOpaque(refcon).takeUnretainedValue()
             // The observer's run loop source lives on the main run loop.
             MainActor.assumeIsolated {
+                // Creation-time catching is the only way a pill never paints.
+                // Logged so it is measurable in the field: if these lines
+                // appear before the sweep's, the fast path is doing the work.
+                // `HostOverlayWatcher.logger` spelled out, never `Self` — this
+                // is a @convention(c) callback, and `Self` there needs a
+                // captured metatype the compiler cannot form (it crashes).
+                watcher.noteWindowCreated(by: element)
                 watcher.sweep()
             }
         }
@@ -283,6 +303,13 @@ final class HostOverlayWatcher {
         )
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
         observers[pid] = observer
+    }
+
+    /// Logging for the observer's fast path, kept out of the C callback itself.
+    private func noteWindowCreated(by element: AXUIElement) {
+        var creatorPID: pid_t = 0
+        AXUIElementGetPid(element, &creatorPID)
+        Self.logger.notice("AXWindowCreated from pid \(creatorPID) — sweeping immediately")
     }
 
     /// Records an app as a pill-popper the first time one is caught, and extends
@@ -498,10 +525,10 @@ final class HostOverlayWatcher {
             return
         }
 
-        // Pills: the AX dismissal ladder, ending in an off-screen park.
+        // Pills: the AX dismissal ladder, ending in a collapse-and-park.
         var strategy = "matched but not dismissable — pill left visible"
         if let axOverlay {
-            strategy = dismiss(axOverlay)
+            strategy = dismiss(axOverlay, candidate: candidate)
         }
         learn(bundleID: bundleID, pid: candidate.pid)
         Self.logger.notice("Overlay (\(label, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
@@ -513,7 +540,9 @@ final class HostOverlayWatcher {
     private func suppressContainer(_ candidate: Candidate) -> String {
         if let window = containerAXWindow(for: candidate) {
             if performNamedCloseAction(on: window) { return "closed via named action" }
-            if park(window, candidate: candidate) { return "parked off-screen (restores after the meeting)" }
+            if park(window, candidate: candidate) {
+                return "parked (collapsed + off-screen, restored after the meeting)"
+            }
         }
         if let app = NSRunningApplication(processIdentifier: candidate.pid), !app.isHidden, app.hide() {
             hiddenHosts.insert(candidate.pid)
@@ -533,27 +562,55 @@ final class HostOverlayWatcher {
         return window
     }
 
-    /// Moves the container off every display and verifies the write landed —
-    /// Electron routinely returns success while ignoring the move.
+    /// Collapses the window to a pixel and moves it off every display, then
+    /// verifies at least one of the two writes landed — Electron routinely
+    /// returns success while ignoring a move. Collapsing is the half that
+    /// sticks when the host re-anchors, so it is the half we require.
     private func park(_ window: AXUIElement, candidate: Candidate) -> Bool {
-        if parked[candidate.windowID] != nil { return true }
-        guard let original = windowPosition(window),
-              moveOffScreen(window),
-              let moved = windowPosition(window),
-              moved.x < -10_000 else { return false }
-        parked[candidate.windowID] = (window, original)
+        let originalPosition = windowPosition(window) ?? candidate.frame.origin
+        let originalSize = windowSize(window) ?? candidate.frame.size
+
+        let collapsed = collapse(window)
+        let moved = moveOffScreen(window)
+        guard collapsed || moved else { return false }
+
+        // First park wins the restore record: a re-park must not overwrite the
+        // real geometry with the collapsed geometry.
+        if parked[candidate.windowID] == nil {
+            parked[candidate.windowID] = ParkedWindow(
+                window: window,
+                pid: candidate.pid,
+                position: originalPosition,
+                size: originalSize
+            )
+        }
         return true
     }
 
-    /// Puts everything back the way it was: parked containers return to their
-    /// original positions, hidden hosts unhide. Runs at meeting end and stop.
+    /// Shrinks a window to a single pixel. A host that re-shows the window
+    /// without resizing it re-shows nothing the user can see.
+    private func collapse(_ window: AXUIElement) -> Bool {
+        var pixel = CGSize(width: 1, height: 1)
+        guard let value = AXValueCreate(.cgSize, &pixel),
+              AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value) == .success,
+              let now = windowSize(window), now.width < 20, now.height < 20 else { return false }
+        return true
+    }
+
+    /// Puts everything back the way it was: parked windows return to their
+    /// original size and position, hidden hosts unhide. Runs at meeting end,
+    /// on stop, and on quit.
     private func restoreSuppressed() {
         for (id, entry) in parked {
-            var point = entry.original
+            var size = entry.size
+            if let value = AXValueCreate(.cgSize, &size) {
+                AXUIElementSetAttributeValue(entry.window, kAXSizeAttribute as CFString, value)
+            }
+            var point = entry.position
             if let value = AXValueCreate(.cgPoint, &point) {
                 AXUIElementSetAttributeValue(entry.window, kAXPositionAttribute as CFString, value)
             }
-            Self.logger.notice("Restored parked container window \(id)")
+            Self.logger.notice("Restored parked window \(id) to \(Int(entry.size.width))x\(Int(entry.size.height)) at \(Int(entry.position.x)),\(Int(entry.position.y))")
         }
         parked.removeAll()
         for pid in hiddenHosts {
@@ -741,15 +798,17 @@ final class HostOverlayWatcher {
     /// Ladder from least to most forceful. Notion's pill exposes no close
     /// affordance at all, so the last rung moves the window off every screen —
     /// it can't be seen, nothing is clicked, and the host app keeps running.
-    /// Callers always place a Quiet cover as well: Electron often ignores the
-    /// AXPosition write while reporting success.
-    private func dismiss(_ window: AXUIElement) -> String {
+    /// The park rung records the window's real geometry so the meeting-end
+    /// restore can put it back exactly.
+    private func dismiss(_ window: AXUIElement, candidate: Candidate) -> String {
         if performNamedCloseAction(on: window) { return "dismissed via named action" }
         if pressCloseButton(in: window, depth: 0) { return "dismissed via close button" }
         if AXUIElementPerformAction(window, kAXCancelAction as CFString) == .success {
             return "dismissed via AXCancel"
         }
-        if moveOffScreen(window) { return "moved off-screen" }
+        if park(window, candidate: candidate) {
+            return "parked (collapsed + off-screen, restored after the meeting)"
+        }
         return "matched but not dismissable"
     }
 
