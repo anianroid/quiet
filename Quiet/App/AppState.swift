@@ -202,6 +202,11 @@ final class AppState: ObservableObject {
         // Orphan setting removed — quitCompetitorsEnabled is the one kill switch.
         UserDefaults.standard.removeObject(forKey: "quiet.hijackEnabled")
 
+        // Every prompt pulled into the notch gets one ripple on the island.
+        hostOverlayWatcher.onSwallow = { [weak quietBanner] in
+            quietBanner?.acknowledgeSwallow()
+        }
+
         refreshPermissions()
         refreshWisprSilenced()
         // A previous session that crashed mid-meeting may have left a

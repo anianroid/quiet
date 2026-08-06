@@ -94,6 +94,13 @@ final class QuietBannerController {
         collapse()
     }
 
+    /// A prompt just landed in the notch: ripple once. Only meaningful while
+    /// the meeting island is showing, so it never summons the island by itself.
+    func acknowledgeSwallow() {
+        guard model.state.isMeeting else { return }
+        model.swallowPulse += 1
+    }
+
     /// Tear down completely (call on quit).
     func destroy() {
         hide()
@@ -213,6 +220,9 @@ enum IslandState: Equatable {
 @MainActor
 final class IslandModel: ObservableObject {
     @Published var state: IslandState = .hidden
+    /// Bumped every time a prompt is pulled into the notch, so the island can
+    /// acknowledge the catch with one ripple.
+    @Published var swallowPulse = 0
     var meetingStartedAt: Date?
     var onKeep: (() -> Void)?
     var onDiscard: (() -> Void)?
@@ -301,7 +311,10 @@ struct IslandRootView: View {
                         // The mark is the status indicator: red on black, so it
                         // reads against the menu bar where dim bars alone did
                         // not. It turns while guarding, faster while recording.
-                        KamuiMark(size: 15, ambient: true, fast: capturing)
+                        ZStack {
+                            SwallowRipple(pulse: model.swallowPulse)
+                            KamuiMark(size: 15, ambient: true, fast: capturing)
+                        }
                         WaveformBars(active: capturing)
                     }
                 } trailing: {
@@ -579,6 +592,34 @@ private struct StatusDot: View {
         }
         .frame(width: 10, height: 10)
         .accessibilityLabel(recording ? "Recording" : "Guarding")
+    }
+}
+
+/// One expanding ring behind the mark, each time a prompt is pulled in. The
+/// only feedback that a catch happened, drawn on Kamui's own surface and
+/// nowhere else.
+private struct SwallowRipple: View {
+    let pulse: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var scale: CGFloat = 0.5
+    @State private var opacity: Double = 0
+
+    var body: some View {
+        Circle()
+            .stroke(Color(red: 1.0, green: 0.35, blue: 0.36), lineWidth: 1.5)
+            .frame(width: 15, height: 15)
+            .scaleEffect(scale)
+            .opacity(opacity)
+            .allowsHitTesting(false)
+            .onChange(of: pulse) {
+                guard !reduceMotion else { return }
+                scale = 0.5
+                opacity = 0.95
+                withAnimation(.easeOut(duration: 0.6)) {
+                    scale = 2.6
+                    opacity = 0
+                }
+            }
     }
 }
 

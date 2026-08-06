@@ -157,6 +157,24 @@ final class HostOverlayWatcher {
         let size: CGSize
     }
     private var parked: [CGWindowID: ParkedWindow] = [:]
+
+    /// Windows mid-Kamui: being pulled into the notch right now. The sweep
+    /// leaves them alone until the pull finishes, or it would fight its own
+    /// animation at 30ms intervals.
+    private var animatingWindows: Set<CGWindowID> = []
+    /// Windows already pulled once this meeting. The first appearance gets the
+    /// full animation; anything the host re-shows afterwards is snapped away
+    /// instantly, because a pill flickering in and out of a spiral is worse
+    /// than one that simply never comes back.
+    private var pulledOnce: Set<CGWindowID> = []
+    /// Fires when a prompt is pulled in, so the island can react — the only
+    /// thing Kamui ever draws is its own surface.
+    var onSwallow: (() -> Void)?
+
+    /// How long the pull takes. Long enough to read as deliberate motion,
+    /// short enough that the prompt is never really *there*.
+    private static let pullDuration: TimeInterval = 0.18
+    private static let pullFrames = 11
     /// Host apps hidden as the last rung — unhidden at meeting end.
     private var hiddenHosts: Set<pid_t> = []
     /// Per-window backoff so a failing suppression ladder is retried every
@@ -381,6 +399,7 @@ final class HostOverlayWatcher {
         lastSuppressAttempt = lastSuppressAttempt.filter { ids.contains($0.key) }
 
         announcedContainers.formIntersection(ids)
+        pulledOnce.formIntersection(ids)
     }
 
     /// True when a pixel read has come back positive for a window still on
@@ -413,6 +432,9 @@ final class HostOverlayWatcher {
     }
 
     private func inspect(_ candidate: Candidate) {
+        // Mid-pull: the animation owns this window's geometry until it lands.
+        guard !animatingWindows.contains(candidate.windowID) else { return }
+
         // Looking an app up by pid is a LaunchServices round trip; at a 30ms
         // cadence that has to happen once per process, not once per tick.
         let identity: AppIdentity
@@ -566,13 +588,15 @@ final class HostOverlayWatcher {
     /// verifies at least one of the two writes landed — Electron routinely
     /// returns success while ignoring a move. Collapsing is the half that
     /// sticks when the host re-anchors, so it is the half we require.
+    ///
+    /// The first time a given window is caught, the collapse is animated: the
+    /// prompt is drawn toward the notch, shrinking as it goes, and vanishes
+    /// into it. Nothing of Kamui's is painted to do this — the offending
+    /// window's own geometry is what moves, so what the user sees is the
+    /// prompt being pulled in, not an effect over the top of it.
     private func park(_ window: AXUIElement, candidate: Candidate) -> Bool {
         let originalPosition = windowPosition(window) ?? candidate.frame.origin
         let originalSize = windowSize(window) ?? candidate.frame.size
-
-        let collapsed = collapse(window)
-        let moved = moveOffScreen(window)
-        guard collapsed || moved else { return false }
 
         // First park wins the restore record: a re-park must not overwrite the
         // real geometry with the collapsed geometry.
@@ -584,7 +608,77 @@ final class HostOverlayWatcher {
                 size: originalSize
             )
         }
-        return true
+
+        let firstSighting = !pulledOnce.contains(candidate.windowID)
+        if firstSighting, !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
+           originalSize.width > 40, originalSize.height > 20 {
+            pulledOnce.insert(candidate.windowID)
+            pullIntoNotch(window, windowID: candidate.windowID, from: originalPosition, size: originalSize)
+            onSwallow?()
+            return true
+        }
+
+        let collapsed = collapse(window)
+        let moved = moveOffScreen(window)
+        return collapsed || moved
+    }
+
+    /// Walks the window's own position and size toward the notch over a few
+    /// frames, easing in so it reads as being pulled rather than sliding, then
+    /// finishes with the ordinary collapse-and-park.
+    private func pullIntoNotch(_ window: AXUIElement, windowID: CGWindowID, from origin: CGPoint, size: CGSize) {
+        animatingWindows.insert(windowID)
+        let startCenter = CGPoint(x: origin.x + size.width / 2, y: origin.y + size.height / 2)
+        let target = Self.notchCenter()
+        let frames = Self.pullFrames
+        let step = Self.pullDuration / Double(frames)
+
+        Task { @MainActor [weak self] in
+            defer { self?.animatingWindows.remove(windowID) }
+            for frame in 1...frames {
+                guard let self else { return }
+                let t = Double(frame) / Double(frames)
+                // Ease-in: slow release, then snatched. t^2.2 reads as a pull.
+                let e = pow(t, 2.2)
+                let width = max(1, size.width * (1 - e))
+                let height = max(1, size.height * (1 - e))
+                let center = CGPoint(
+                    x: startCenter.x + (target.x - startCenter.x) * e,
+                    y: startCenter.y + (target.y - startCenter.y) * e
+                )
+                self.setFrame(
+                    window,
+                    position: CGPoint(x: center.x - width / 2, y: center.y - height / 2),
+                    size: CGSize(width: width, height: height)
+                )
+                try? await Task.sleep(for: .seconds(step))
+            }
+            guard let self else { return }
+            _ = self.collapse(window)
+            _ = self.moveOffScreen(window)
+        }
+    }
+
+    /// Where prompts get pulled to: the middle of the notch on the active
+    /// display, or the top centre of the menu bar when there is no notch.
+    private static func notchCenter() -> CGPoint {
+        guard let screen = NSScreen.main else { return .zero }
+        let notch = NotchGeometry.current
+        let height = notch.hasNotch ? notch.height : NotchGeometry.menuBarHeight
+        // Accessibility coordinates: origin at the top-left of the main display.
+        return CGPoint(x: screen.frame.midX, y: max(2, height / 2))
+    }
+
+    /// One AX write pair, position and size together.
+    private func setFrame(_ window: AXUIElement, position: CGPoint, size: CGSize) {
+        var point = position
+        if let value = AXValueCreate(.cgPoint, &point) {
+            AXUIElementSetAttributeValue(window, kAXPositionAttribute as CFString, value)
+        }
+        var newSize = size
+        if let value = AXValueCreate(.cgSize, &newSize) {
+            AXUIElementSetAttributeValue(window, kAXSizeAttribute as CFString, value)
+        }
     }
 
     /// Shrinks a window to a single pixel. A host that re-shows the window
@@ -619,6 +713,8 @@ final class HostOverlayWatcher {
         }
         hiddenHosts.removeAll()
         lastSuppressAttempt.removeAll()
+        pulledOnce.removeAll()
+        animatingWindows.removeAll()
         suppressAttemptsByPID.removeAll()
         announcedContainers.removeAll()
     }
