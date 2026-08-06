@@ -26,6 +26,7 @@
 		4700EDF0BE37359923090D66 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6C677A4448109AEEB1FB938 /* Models.swift */; };
 		47B3D08163968DAC40F500C2 /* MeetingDetectorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */; };
 		A7C1E4B2D9F3086A5B2C7D41 /* HostOverlayWatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */; };
+		B8F4D2A6C1E5097B3D6A8F42 /* IslandStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A7E9B4D2F6085C7B3E9A51 /* IslandStateTests.swift */; };
 		4B4BC00CA8D941E8F575CE3C /* MergeTranscriptTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */; };
 		5108D04D87533D2693E930DE /* TranscriptionAssets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DE7BE1C01CC3F8594418F32 /* TranscriptionAssets.swift */; };
 		57FEE1EA751146736CEA53EA /* QuietBanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3793E4823A62BA68364F2BD2 /* QuietBanner.swift */; };
@@ -96,6 +97,7 @@
 		9869A705BCA54FAC09C24858 /* MeetingDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetector.swift; sourceTree = "<group>"; };
 		9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MeetingDetectorTests.swift; sourceTree = "<group>"; };
 		E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HostOverlayWatcherTests.swift; sourceTree = "<group>"; };
+		C1A7E9B4D2F6085C7B3E9A51 /* IslandStateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IslandStateTests.swift; sourceTree = "<group>"; };
 		9C967BF53C03975C920EB390 /* OnboardingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingViews.swift; sourceTree = "<group>"; };
 		9DE7BE1C01CC3F8594418F32 /* TranscriptionAssets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TranscriptionAssets.swift; sourceTree = "<group>"; };
 		A0550FF8552900CA6AB5008A /* Quiet.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Quiet.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -167,6 +169,7 @@
 			isa = PBXGroup;
 			children = (
 				E5D2A8C4B6F1093D7A4E8B52 /* HostOverlayWatcherTests.swift */,
+				C1A7E9B4D2F6085C7B3E9A51 /* IslandStateTests.swift */,
 				9B302AB7AE98528B3EFA7425 /* MeetingDetectorTests.swift */,
 				8F298815DE79969102AF77DC /* MergeTranscriptTests.swift */,
 				E34F841694802177A85A5A99 /* NameTokenMatcherTests.swift */,
@@ -414,6 +417,7 @@
 				D422AAB315A2D3328FEEE866 /* HostOwnsNotesView.swift in Sources */,
 				78D7379FEFB4E8020D801EDD /* MeetingDetector.swift in Sources */,
 				A7C1E4B2D9F3086A5B2C7D41 /* HostOverlayWatcherTests.swift in Sources */,
+				B8F4D2A6C1E5097B3D6A8F42 /* IslandStateTests.swift in Sources */,
 				47B3D08163968DAC40F500C2 /* MeetingDetectorTests.swift in Sources */,
 				DA4137C5D4475AEF456BB20C /* MeetingTranscriber.swift in Sources */,
 				1472660874BCAFC1F0EDBFD4 /* MenuSettingsNotes.swift in Sources */,

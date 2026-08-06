@@ -12,22 +12,35 @@ final class QuietBannerController {
     private let model = IslandModel()
     private var hideWork: DispatchWorkItem?
     private var orderOutWork: DispatchWorkItem?
-    private var isPersistent = false
+
+    /// The state the island belongs in once any transient toast has passed —
+    /// set while a meeting is live, nil otherwise.
+    ///
+    /// This exists because a toast used to be able to delete a live meeting
+    /// island: relaunching Kamui mid-meeting shows the island (the detector
+    /// re-fires `.started` on a fresh stream), then the launch toast replaced
+    /// it and its own timer hid everything, leaving no status for the rest of
+    /// the call. A toast is now always temporary, never terminal.
+    private var persistentState: IslandState?
 
     /// Resolves the pending Keep/Discard prompt, if one is showing.
     /// Nil'd before invocation so exactly one outcome ever fires.
     private var pendingKeepDiscard: ((_ keep: Bool) -> Void)?
 
-    /// Brief toast (launch messages, “Notes saved”). Auto-hides.
+    /// Brief toast (launch messages, “Notes saved”). Auto-hides, or returns to
+    /// the meeting island when a meeting is still running underneath it.
     func show(message: String, duration: TimeInterval = 5) {
         resolvePendingAsKeep()
-        isPersistent = false
         present(.toast(message: message))
 
         hideWork?.cancel()
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !self.isPersistent else { return }
-            self.hide()
+            guard let self else { return }
+            if let persistent = self.persistentState {
+                self.present(persistent)
+            } else {
+                self.hide()
+            }
         }
         hideWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + duration, execute: work)
@@ -40,13 +53,14 @@ final class QuietBannerController {
         resolvePendingAsKeep()
         hideWork?.cancel()
         hideWork = nil
-        isPersistent = true
         // The timer anchors to the first moment the meeting surfaced, surviving
         // guard → recording transitions.
         if !model.state.isMeeting {
             model.meetingStartedAt = Date()
         }
-        present(.meeting(capturing: capturing))
+        let state = IslandState.meeting(capturing: capturing)
+        persistentState = state
+        present(state)
     }
 
     /// Interactive post-call island with Keep / Discard buttons. Exactly one
@@ -63,7 +77,9 @@ final class QuietBannerController {
         resolvePendingAsKeep()
         hideWork?.cancel()
         hideWork = nil
-        isPersistent = true
+        // The meeting is over; this prompt is now what the island belongs in
+        // until it is answered.
+        persistentState = nil
 
         pendingKeepDiscard = { keep in
             if keep { onKeep() } else { onDiscard() }
@@ -90,9 +106,13 @@ final class QuietBannerController {
         resolvePendingAsKeep()
         hideWork?.cancel()
         hideWork = nil
-        isPersistent = false
+        persistentState = nil
         collapse()
     }
+
+    /// Internal (not private) so a unit test can pin the regression where a
+    /// toast deleted a live meeting island.
+    var isShowingMeetingIsland: Bool { model.state.isMeeting }
 
     /// A prompt just landed in the notch: ripple once. Only meaningful while
     /// the meeting island is showing, so it never summons the island by itself.
@@ -117,7 +137,7 @@ final class QuietBannerController {
         pendingKeepDiscard = nil
         hideWork?.cancel()
         hideWork = nil
-        isPersistent = false
+        persistentState = nil
         collapse()
         resolve(keep)
     }
