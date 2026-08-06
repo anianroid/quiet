@@ -149,6 +149,9 @@ final class HostOverlayWatcher {
     /// Per-window backoff so a failing suppression ladder is retried every
     /// couple of seconds, not at sweep cadence.
     private var lastSuppressAttempt: [CGWindowID: Date] = [:]
+    /// How many times each window has needed suppressing. A window that keeps
+    /// coming back is a host re-anchoring it, and gets met at full cadence.
+    private var suppressAttempts: [CGWindowID: Int] = [:]
     /// Containers already logged as "confirming via pixels" — once per
     /// sighting, not once per 30ms tick.
     private var announcedContainers: Set<CGWindowID> = []
@@ -347,6 +350,7 @@ final class HostOverlayWatcher {
         }
         pruneVerdicts(seen: ids)
         lastSuppressAttempt = lastSuppressAttempt.filter { ids.contains($0.key) }
+        suppressAttempts = suppressAttempts.filter { ids.contains($0.key) }
         announcedContainers.formIntersection(ids)
     }
 
@@ -458,13 +462,19 @@ final class HostOverlayWatcher {
         }
         let label = identity.name.isEmpty ? bundleID : identity.name
 
-        // A failing ladder is retried every couple of seconds, never at sweep
-        // cadence — AX calls to a stuck Electron process are not free.
+        // Hosts that re-anchor a parked window (Notion re-shows its pill every
+        // ~3s for as long as its own setting is on) must be met at sweep
+        // cadence, or each re-anchor is a visible flash. Everything else backs
+        // off, because AX calls to a stuck Electron process are not free.
         let now = Date()
-        if let last = lastSuppressAttempt[candidate.windowID], now.timeIntervalSince(last) < 2 {
+        let isRepeatOffender = suppressAttempts[candidate.windowID, default: 0] >= 2
+        if !isRepeatOffender,
+           let last = lastSuppressAttempt[candidate.windowID],
+           now.timeIntervalSince(last) < 2 {
             return
         }
         lastSuppressAttempt[candidate.windowID] = now
+        suppressAttempts[candidate.windowID, default: 0] += 1
 
         if candidate.kind == .container {
             // Nothing is ever drawn over the user's screen. A container pill
@@ -547,6 +557,7 @@ final class HostOverlayWatcher {
         }
         hiddenHosts.removeAll()
         lastSuppressAttempt.removeAll()
+        suppressAttempts.removeAll()
         announcedContainers.removeAll()
     }
 

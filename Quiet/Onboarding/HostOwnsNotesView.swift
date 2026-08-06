@@ -15,7 +15,7 @@ struct HostOwnsNotesView: View {
             Text("Kamui owns notes")
                 .font(.title3.weight(.medium))
 
-            Text("Sidecar apps (Granola, Fireflies…) are quit automatically during meetings and free to use otherwise. Zoom and Notion stay open — turn off their built-in Take notes prompts once.")
+            Text("Sidecar apps (Granola, Fireflies…) are frozen during meetings, then resume untouched. They stay free to use between calls. Zoom and Notion stay open — turn off their built-in Take notes prompts once.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 

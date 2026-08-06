@@ -25,7 +25,9 @@ final class AppState: ObservableObject {
             if quitCompetitorsEnabled {
                 armCompetitorWatchdog()
             } else {
+                // Turning the hold off mid-meeting thaws immediately.
                 competitorWatchdog.stop()
+                recordHijackActions(processController.resumeSuspendedCompetitors())
             }
         }
     }
@@ -202,6 +204,9 @@ final class AppState: ObservableObject {
 
         refreshPermissions()
         refreshWisprSilenced()
+        // A previous session that crashed mid-meeting may have left a
+        // competitor frozen. Thaw everything before doing anything else.
+        processController.thawEveryCompetitor()
         installedCompetitors = scanner.scan()
         lastScanAt = Date()
         migrateLegacyNotesFolder()
@@ -341,6 +346,7 @@ final class AppState: ObservableObject {
         detectorTask?.cancel()
         detectorTask = nil
         competitorWatchdog.stop()
+        recordHijackActions(processController.resumeSuspendedCompetitors())
         notificationWatcher.stop()
         hostOverlayWatcher.stop()
 
@@ -611,6 +617,9 @@ final class AppState: ObservableObject {
         isMeetingActive = false
         isCapturing = false
         competitorWatchdog.stop()
+        // Thaw before anything that can throw or suspend — a frozen notetaker
+        // must never outlive the meeting that froze it.
+        recordHijackActions(processController.resumeSuspendedCompetitors())
         hostOverlayWatcher.setMeetingActive(false)
         notificationWatcher.setMeetingActive(false)
         quietBanner.hide()

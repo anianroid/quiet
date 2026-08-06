@@ -174,7 +174,7 @@ struct CompetitorScanView: View {
     private func detail(for item: InstalledCompetitor) -> String {
         switch item.entry.policy {
         case .suspendDuringMeeting:
-            return "Quit during meetings · \(item.displayDetail)"
+            return "Frozen during meetings · \(item.displayDetail)"
         case .quitOnQuietLaunch:
             return "Will quit when Kamui launches · \(item.displayDetail)"
         case .ignore:
