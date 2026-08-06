@@ -109,7 +109,19 @@ final class AppState: ObservableObject {
     private var notesRootURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        return docs.appendingPathComponent("Quiet", isDirectory: true)
+        return docs.appendingPathComponent("Kamui", isDirectory: true)
+    }
+
+    /// One-time brand migration: notes lived in Documents/Quiet before the
+    /// app became Kamui. Old folder moves whole; nothing merges.
+    private func migrateLegacyNotesFolder() {
+        let fm = FileManager.default
+        let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
+        let legacy = docs.appendingPathComponent("Quiet", isDirectory: true)
+        guard fm.fileExists(atPath: legacy.path),
+              !fm.fileExists(atPath: notesRootURL.path) else { return }
+        try? fm.moveItem(at: legacy, to: notesRootURL)
     }
 
     private enum Keys {
@@ -122,12 +134,6 @@ final class AppState: ObservableObject {
         static let hostNotionCalendar = "quiet.hostNotesDisabled.notionCalendar"
     }
 
-    var menuBarSymbolName: String {
-        if isPaused { return "pause.circle" }
-        if isCapturing { return "waveform.circle.fill" }
-        if isMeetingActive { return "record.circle" }
-        return "waveform"
-    }
 
     var isZoomInstalled: Bool {
         NSWorkspace.shared.urlForApplication(withBundleIdentifier: "us.zoom.xos") != nil
@@ -198,6 +204,7 @@ final class AppState: ObservableObject {
         refreshWisprSilenced()
         installedCompetitors = scanner.scan()
         lastScanAt = Date()
+        migrateLegacyNotesFolder()
         recoverOrphanedTranscripts()
 
         // Debug only: hold the island in its meeting/recording state so the
@@ -206,7 +213,7 @@ final class AppState: ObservableObject {
         if let debugState = UserDefaults.standard.string(forKey: "quiet.debugIslandState") {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
                 self?.quietBanner.showMeetingStatus(
-                    message: "Quiet · Meeting",
+                    message: "Kamui · Meeting",
                     capturing: debugState == "recording"
                 )
             }
@@ -263,7 +270,7 @@ final class AppState: ObservableObject {
     func completeOnboarding() {
         hasCompletedOnboarding = true
         startMonitoring()
-        statusMessage = "Ready — Quiet will handle meetings"
+        statusMessage = "Ready — Kamui will handle meetings"
     }
 
     func refreshPermissions() {
@@ -354,7 +361,7 @@ final class AppState: ObservableObject {
         resumeTask = nil
         isPaused = false
         pausedUntil = nil
-        statusMessage = "Ready — Quiet will handle meetings"
+        statusMessage = "Ready — Kamui will handle meetings"
         logger.info("Resumed monitoring")
         startMonitoring()
     }
@@ -414,7 +421,7 @@ final class AppState: ObservableObject {
         }
 
         // Persistent notch island for the meeting — not a 5s toast.
-        quietBanner.showMeetingStatus(message: "Quiet · Meeting")
+        quietBanner.showMeetingStatus(message: "Kamui · Meeting")
         currentSession = session
 
         // Guard boundary: any capture/transcription failure leaves the guardian
@@ -435,7 +442,7 @@ final class AppState: ObservableObject {
                     }
                     self.isCapturing = true
                     self.statusMessage = "Capturing — \(source)"
-                    self.quietBanner.showMeetingStatus(message: "Quiet · Capturing", capturing: true)
+                    self.quietBanner.showMeetingStatus(message: "Kamui · Capturing", capturing: true)
                 } catch is CancellationError {
                     // handleMeetingEnded cancelled us mid-startup — undo
                     // whatever half of the pipeline already came up.
@@ -447,7 +454,7 @@ final class AppState: ObservableObject {
                     self.isCapturing = false
                     guard self.isMeetingActive, self.currentSession?.id == sessionID else { return }
                     self.statusMessage = "Holding competitors; capture off — \(error.localizedDescription)"
-                    self.quietBanner.showMeetingStatus(message: "Quiet · Meeting")
+                    self.quietBanner.showMeetingStatus(message: "Kamui · Meeting")
                 }
             }
         } else {
@@ -570,7 +577,7 @@ final class AppState: ObservableObject {
                 let notes = """
                 # Recovered notes
 
-                Quiet quit unexpectedly during this meeting. The transcript below was \
+                Kamui quit unexpectedly during this meeting. The transcript below was \
                 checkpointed live and recovered on launch.
                 """
                 try notes.write(to: notesURL, atomically: true, encoding: .utf8)
@@ -690,14 +697,14 @@ final class AppState: ObservableObject {
         }
     }
 
-    /// One-line notch prompt: "Quiet · Notes ready — 3 actions · 1 decision — <gist>".
+    /// One-line notch prompt: "Kamui · Notes ready — 3 actions · 1 decision — <gist>".
     static func keepDiscardMessage(summary: MeetingSummary?) -> String {
         guard let summary else {
-            return "Quiet · Summary unavailable — transcript saved"
+            return "Kamui · Summary unavailable — transcript saved"
         }
         let actions = pluralized(summary.actions.count, "action")
         let decisions = pluralized(summary.decisions.count, "decision")
-        var message = "Quiet · Notes ready — \(actions) · \(decisions)"
+        var message = "Kamui · Notes ready — \(actions) · \(decisions)"
         if let gist = gist(for: summary) {
             message += " — " + gist
         }

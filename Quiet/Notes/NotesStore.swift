@@ -7,7 +7,7 @@ struct NotesStore: Sendable {
     private var rootURL: URL {
         let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Documents")
-        return docs.appendingPathComponent("Quiet", isDirectory: true)
+        return docs.appendingPathComponent("Kamui", isDirectory: true)
     }
 
     private var pendingRootURL: URL {
@@ -80,7 +80,7 @@ struct NotesStore: Sendable {
 
     private func renderNotes(session: MeetingSession, summary: MeetingSummary?) -> String {
         var lines: [String] = [
-            "# Quiet notes",
+            "# Kamui notes",
             "",
             "- Started: \(session.startedAt.formatted())",
             "- Source: \(session.sourceApp)",
@@ -99,7 +99,7 @@ struct NotesStore: Sendable {
         guard let summary else {
             lines.append("Summary unavailable — transcript saved.")
             lines.append("")
-            lines.append("_Generated on-device by Quiet. Audio never left this Mac._")
+            lines.append("_Generated on-device by Kamui. Audio never left this Mac._")
             return lines.joined(separator: "\n")
         }
         lines.append(summary.overview)
@@ -128,7 +128,7 @@ struct NotesStore: Sendable {
             summary.questions.forEach { lines.append("- \($0)") }
         }
         lines.append("")
-        lines.append("_Generated on-device by Quiet. Audio never left this Mac._")
+        lines.append("_Generated on-device by Kamui. Audio never left this Mac._")
         return lines.joined(separator: "\n")
     }
 }

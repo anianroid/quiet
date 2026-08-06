@@ -36,7 +36,7 @@ final class QuietBannerController {
     /// Persistent island while a meeting is active. Call `hide()` on meeting end.
     /// `capturing` switches the passive guard state into the live recording
     /// state — animated level bars, pulsing record dot, elapsed timer.
-    func showMeetingStatus(message: String = "Quiet · Meeting", capturing: Bool = false) {
+    func showMeetingStatus(message: String = "Kamui · Meeting", capturing: Bool = false) {
         resolvePendingAsKeep()
         hideWork?.cancel()
         hideWork = nil
@@ -241,6 +241,15 @@ struct NotchGeometry {
         guard width > 1 else { return NotchGeometry(width: 0, height: 0) }
         return NotchGeometry(width: width, height: screen.safeAreaInsets.top)
     }
+
+    /// Menu bar height on the current screen — the compact meeting bar must
+    /// be exactly this tall on displays without a notch. Falls back to the
+    /// status bar thickness when the menu bar is set to auto-hide.
+    static var menuBarHeight: CGFloat {
+        guard let screen = NSScreen.main else { return 24 }
+        let height = screen.frame.maxY - screen.visibleFrame.maxY
+        return height > 1 ? height : NSStatusBar.system.thickness
+    }
 }
 
 // MARK: - Root view
@@ -289,21 +298,18 @@ struct IslandRootView: View {
             if notch.hasNotch {
                 NotchWrapSurface(notch: notch) {
                     HStack(spacing: 7) {
-                        StatusDot(recording: capturing)
-                        Text("Quiet")
-                            .font(.system(size: 12, weight: .bold, design: .rounded))
-                            .foregroundStyle(.white)
+                        if capturing {
+                            StatusDot(recording: true)
+                        }
+                        WaveformBars(active: capturing)
                     }
                 } trailing: {
-                    HStack(spacing: 7) {
-                        WaveformBars(active: capturing)
-                        if let startedAt = model.meetingStartedAt {
-                            ElapsedTime(since: startedAt)
-                        }
+                    if let startedAt = model.meetingStartedAt {
+                        ElapsedTime(since: startedAt)
                     }
                 }
             } else {
-                ExpandedSurface(notch: notch) {
+                MenuBarSurface {
                     MeetingContent(capturing: capturing, startedAt: model.meetingStartedAt)
                 }
             }
@@ -374,6 +380,44 @@ private struct NotchWrapSurface<Leading: View, Trailing: View>: View {
     }
 }
 
+/// Compact meeting bar for displays without a notch: exactly menu-bar height,
+/// flush to the top edge with square shoulders and rounded feet — the same
+/// silhouette as the notch ears, without a notch to wrap.
+private struct MenuBarSurface<Content: View>: View {
+    @ViewBuilder var content: Content
+
+    var body: some View {
+        content
+            .padding(.horizontal, 14)
+            .frame(height: NotchGeometry.menuBarHeight)
+            .background {
+                UnevenRoundedRectangle(
+                    bottomLeadingRadius: 14,
+                    bottomTrailingRadius: 14,
+                    style: .continuous
+                )
+                .fill(.black)
+                .overlay {
+                    UnevenRoundedRectangle(
+                        bottomLeadingRadius: 14,
+                        bottomTrailingRadius: 14,
+                        style: .continuous
+                    )
+                    .strokeBorder(
+                        LinearGradient(
+                            colors: [.clear, .white.opacity(0.10)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        ),
+                        lineWidth: 0.5
+                    )
+                }
+                .shadow(color: .black.opacity(0.4), radius: 10, y: 4)
+            }
+            .fixedSize()
+    }
+}
+
 /// Taller states. On a notch display this still starts flush at the top with
 /// square shoulders, so it grows out of the notch rather than floating below.
 private struct ExpandedSurface<Content: View>: View {
@@ -420,14 +464,54 @@ private struct ExpandedSurface<Content: View>: View {
 
 // MARK: - State content
 
+/// The Kamui mark — the app's namesake Mangekyō. The dimension notifiers get
+/// pulled into is always turning: `ambient` keeps it in a slow continuous
+/// spin; otherwise it makes one settling turn when it appears. Reduced
+/// motion renders it still.
+struct KamuiMark: View {
+    var size: CGFloat = 16
+    var ambient = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var spun = false
+
+    /// One ambient revolution takes this long — present, never distracting.
+    private static let ambientPeriod: TimeInterval = 18
+
+    var body: some View {
+        if ambient, !reduceMotion {
+            TimelineView(.animation(minimumInterval: 1 / 30)) { context in
+                let turn = context.date.timeIntervalSinceReferenceDate
+                    .truncatingRemainder(dividingBy: Self.ambientPeriod) / Self.ambientPeriod
+                mark.rotationEffect(.degrees(turn * 360))
+            }
+        } else {
+            mark
+                .rotationEffect(.degrees(spun || reduceMotion ? 0 : -180))
+                .opacity(spun || reduceMotion ? 1 : 0.4)
+                .onAppear {
+                    withAnimation(.spring(response: 0.8, dampingFraction: 0.8)) {
+                        spun = true
+                    }
+                }
+        }
+    }
+
+    private var mark: some View {
+        Image("KamuiMark")
+            .resizable()
+            .interpolation(.high)
+            .scaledToFit()
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
+    }
+}
+
 private struct ToastContent: View {
     let message: String
 
     var body: some View {
         HStack(spacing: 7) {
-            Image(systemName: "waveform")
-                .font(.system(size: 11, weight: .bold))
-                .foregroundStyle(.white.opacity(0.9))
+            KamuiMark(size: 14)
             Text(message)
                 .font(.system(size: 12, weight: .semibold, design: .rounded))
                 .foregroundStyle(.white)
@@ -439,18 +523,19 @@ private struct ToastContent: View {
     }
 }
 
-/// Live meeting status: guard mode is calm (still bars, soft green dot);
+/// Live meeting status: guard mode is calm (still dim bars, nothing else);
 /// recording mode is alive (dancing bars, breathing red dot, elapsed time).
+/// No wordmark and no idle dot — the bar should read as a system state, not
+/// an app announcing itself.
 private struct MeetingContent: View {
     let capturing: Bool
     let startedAt: Date?
 
     var body: some View {
         HStack(spacing: 9) {
-            StatusDot(recording: capturing)
-            Text("Quiet")
-                .font(.system(size: 12, weight: .bold, design: .rounded))
-                .foregroundStyle(.white)
+            if capturing {
+                StatusDot(recording: true)
+            }
             WaveformBars(active: capturing)
             if let startedAt {
                 ElapsedTime(since: startedAt)
@@ -460,9 +545,8 @@ private struct MeetingContent: View {
     }
 }
 
-/// Green = guarding (competitors silenced, nothing recorded).
-/// Red + breathing glow = audio is being captured. The distinction is the
-/// honest part of the design: recording never looks idle.
+/// Red + breathing glow = audio is being captured — shown only while
+/// recording, and recording never looks idle. Guard mode shows no dot at all.
 private struct StatusDot: View {
     let recording: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

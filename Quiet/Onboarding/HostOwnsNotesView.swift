@@ -12,7 +12,7 @@ struct HostOwnsNotesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Quiet owns notes")
+            Text("Kamui owns notes")
                 .font(.title3.weight(.medium))
 
             Text("Sidecar apps (Granola, Fireflies…) are quit automatically during meetings and free to use otherwise. Zoom and Notion stay open — turn off their built-in Take notes prompts once.")
@@ -109,7 +109,7 @@ struct HostOwnsNotesView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            Text("Wispr watches for meetings and pops a “Start Notetaker” pill. Quiet can turn that off in Wispr's own settings — dictation keeps working. Wispr restarts once.")
+            Text("Wispr watches for meetings and pops a “Start Notetaker” pill. Kamui can turn that off in Wispr's own settings — dictation keeps working. Wispr restarts once.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -431,7 +431,7 @@ final class HostOverlayWatcher {
 
         let axSaysPrompt = !blob.isEmpty
             && matcher.isNotetakerPill(blob)
-            && !blob.localizedCaseInsensitiveContains("Quiet")
+            && !blob.localizedCaseInsensitiveContains("Kamui")
 
         let verdict = ocrVerdicts[candidate.windowID]
         let pixelsSayPrompt = verdict?.isNotetakerPrompt ?? false
@@ -524,7 +524,7 @@ final class HostOverlayWatcher {
             }
             let isPrompt = !read.text.isEmpty
                 && self.matcher.isNotetakerPill(read.text)
-                && !read.text.localizedCaseInsensitiveContains("Quiet")
+                && !read.text.localizedCaseInsensitiveContains("Kamui")
             self.ocrVerdicts[windowID] = OCRVerdict(
                 isNotetakerPrompt: isPrompt,
                 checkedAt: Date(),

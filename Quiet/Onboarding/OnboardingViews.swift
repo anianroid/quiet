@@ -55,13 +55,12 @@ struct OnboardingFlow: View {
     }
 
     private var header: some View {
-        HStack {
-            Image(systemName: "waveform.circle.fill")
-                .font(.largeTitle)
+        HStack(spacing: 12) {
+            KamuiMark(size: 36, ambient: true)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Quiet")
+                Text("Kamui")
                     .font(.title2.weight(.semibold))
-                Text("One notetaker. Zero noise.")
+                Text("Sends every other notetaker to another dimension.")
                     .foregroundStyle(.secondary)
             }
             Spacer()
@@ -73,7 +72,7 @@ struct OnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Meetings shouldn’t open three notetakers.")
                 .font(.title3.weight(.medium))
-            Text("Quiet takes notes on your Mac with Apple speech and Apple Intelligence. On day zero it finds the notetakers you already have and handles them for you — no scavenger hunt in System Settings.")
+            Text("Kamui takes notes on your Mac with Apple speech and Apple Intelligence. On day zero it finds the notetakers you already have and handles them for you — no scavenger hunt in System Settings.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -92,7 +91,7 @@ struct OnboardingFlow: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("You’re set")
                 .font(.title3.weight(.medium))
-            Text("Quiet lives in the menu bar. When a meeting starts it silences competing notetakers and shows a Quiet · Meeting status in the notch.")
+            Text("Kamui lives in the menu bar. When a meeting starts it silences competing notetakers and shows a Kamui · Meeting status in the notch.")
                 .foregroundStyle(.secondary)
 
             if !appState.installedCompetitors.isEmpty {
@@ -102,9 +101,9 @@ struct OnboardingFlow: View {
 
             Spacer()
 
-            Button("Open Quiet") {
+            Button("Open Kamui") {
                 appState.completeOnboarding()
-                for window in NSApp.windows where window.title == "Quiet Setup" {
+                for window in NSApp.windows where window.title == "Kamui Setup" {
                     window.close()
                 }
             }
@@ -124,14 +123,14 @@ struct CompetitorScanView: View {
             Text("We’ll handle")
                 .font(.title3.weight(.medium))
 
-            Text("Quiet scanned for known meeting notetakers on this Mac.")
+            Text("Kamui scanned for known meeting notetakers on this Mac.")
                 .foregroundStyle(.secondary)
 
             if appState.installedCompetitors.isEmpty {
                 ContentUnavailableView(
                     "No competing notetakers found",
                     systemImage: "checkmark.seal",
-                    description: Text("If you install Otter, Fireflies, Granola, and friends later, Quiet will handle them during meetings. You can re-scan anytime in Settings.")
+                    description: Text("If you install Otter, Fireflies, Granola, and friends later, Kamui will handle them during meetings. You can re-scan anytime in Settings.")
                 )
                 .frame(maxHeight: 220)
             } else {
@@ -177,7 +176,7 @@ struct CompetitorScanView: View {
         case .suspendDuringMeeting:
             return "Quit during meetings · \(item.displayDetail)"
         case .quitOnQuietLaunch:
-            return "Will quit when Quiet launches · \(item.displayDetail)"
+            return "Will quit when Kamui launches · \(item.displayDetail)"
         case .ignore:
             return "Host kept open; turn off built-in notes once · \(item.displayDetail)"
         }
@@ -190,9 +189,9 @@ struct PermissionsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Permissions for Quiet only")
+            Text("Permissions for Kamui only")
                 .font(.title3.weight(.medium))
-            Text("Grant these once to Quiet. You don’t need to open notification settings for Otter, Zoom, or Chrome.")
+            Text("Grant these once to Kamui. You don’t need to open notification settings for Otter, Zoom, or Chrome.")
                 .foregroundStyle(.secondary)
 
             permissionRow(
@@ -284,7 +283,7 @@ struct SpeechModelSetupView: View {
         VStack(alignment: .leading, spacing: 16) {
             Text("Download the speech model")
                 .font(.title3.weight(.medium))
-            Text("Quiet transcribes on this Mac — audio never touches a server. One download now means your first meeting works even offline.")
+            Text("Kamui transcribes on this Mac — audio never touches a server. One download now means your first meeting works even offline.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -343,7 +342,7 @@ struct SpeechModelSetupView: View {
             Label("Speech model ready — transcription works offline.", systemImage: "checkmark.circle.fill")
                 .foregroundStyle(.green)
         case .unavailable:
-            Label("On-device transcription isn’t available for your language yet. Quiet still silences competitors during meetings.", systemImage: "exclamationmark.triangle")
+            Label("On-device transcription isn’t available for your language yet. Kamui still silences competitors during meetings.", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.orange)
         case .failed(let detail):
             Label("Download failed: \(detail)", systemImage: "exclamationmark.triangle")

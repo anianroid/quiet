@@ -25,14 +25,14 @@
 	<key>LSUIElement</key>
 	<true/>
 	<key>NSAudioCaptureUsageDescription</key>
-	<string>Quiet captures meeting audio on your Mac so it can take notes locally. Nothing is uploaded.</string>
+	<string>Kamui captures meeting audio on your Mac so it can take notes locally. Nothing is uploaded.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Quiet captures your microphone so meeting notes include what you say — on device only.</string>
+	<string>Kamui captures your microphone so meeting notes include what you say — on device only.</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
-	<string>Quiet transcribes meetings on your Mac using Apple speech recognition. Audio never leaves your device.</string>
+	<string>Kamui transcribes meetings on your Mac using Apple speech recognition. Audio never leaves your device.</string>
 	<key>NSAppleEventsUsageDescription</key>
-	<string>Quiet silences competing notetaker helpers during meetings.</string>
+	<string>Kamui silences competing notetaker helpers during meetings.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Quiet needs Screen and System Audio Recording to hear meeting playback without joining as a bot.</string>
+	<string>Kamui needs Screen and System Audio Recording to hear meeting playback without joining as a bot.</string>
 </dict>
 </plist>
