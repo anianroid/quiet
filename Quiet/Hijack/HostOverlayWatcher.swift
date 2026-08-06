@@ -49,10 +49,10 @@ final class HostOverlayWatcher {
     nonisolated static let maxContainerHeight: CGFloat = 800
 
     enum CandidateKind {
-        /// A window that is itself pill-sized — covered whole when matched.
+        /// A window that is itself pill-sized — dismissed or parked whole.
         case pill
-        /// An oversized elevated-layer window that may host a pill. Only the
-        /// text region Vision locates inside it is ever covered.
+        /// An oversized elevated-layer window that may host a pill. Acted on
+        /// only with pixel evidence: closed, parked, or its host hidden.
         case container
     }
 
@@ -104,8 +104,7 @@ final class HostOverlayWatcher {
         let isNotetakerPrompt: Bool
         let checkedAt: Date
         let text: String
-        /// Where the recognized text sits, in Quartz screen coordinates —
-        /// the only part of a container window a cover may occupy.
+        /// Where the recognized text sits, in Quartz screen coordinates.
         let promptRect: CGRect?
     }
     private var ocrVerdicts: [CGWindowID: OCRVerdict] = [:]
@@ -114,9 +113,9 @@ final class HostOverlayWatcher {
     /// Screen Recording is optional for this layer — say so once, not per sweep.
     private var loggedCaptureUnavailable = false
 
-    /// Host apps that pop notetaker pills Quiet must never leave on screen.
+    /// Host apps that pop notetaker pills Kamui must never leave on screen.
     /// These are never force-quit (Notion is the user's workspace; Wispr is
-    /// dictation) — only their pill-sized floating windows are covered.
+    /// dictation) — only their prompt windows are dismissed, parked, or hidden.
     /// Windows already on screen for a few seconds before the meeting are
     /// treated as persistent HUDs (Wispr's dictation bar) and left alone.
     /// Derived from the catalog's popsMeetingPills entries — never a list
@@ -140,14 +139,18 @@ final class HostOverlayWatcher {
     /// meeting started — dictation HUDs, not prompts.
     private var persistentBeforeMeeting: Set<CGWindowID> = []
 
-    /// Quiet-owned panels drawn on top of pills whose host ignores AX moves
-    /// (Electron). Keyed by the CG window they cover.
-    private var covers: [CGWindowID: NSPanel] = [:]
-    /// Covers placed over an OCR-located text region inside a container —
-    /// removed as soon as a re-read says the pill's text is gone.
-    private var textRegionCovers: Set<CGWindowID> = []
-    /// Containers already logged as "locating pill text" — once per sighting,
-    /// not once per 30ms tick.
+    /// Containers parked off-screen during a meeting, with the position to
+    /// restore at meeting end. Parking is the no-drawing suppression: the
+    /// whole transparent container (pill included) moves off every display.
+    /// Nothing is ever painted over the user's screen.
+    private var parked: [CGWindowID: (window: AXUIElement, original: CGPoint)] = [:]
+    /// Host apps hidden as the last rung — unhidden at meeting end.
+    private var hiddenHosts: Set<pid_t> = []
+    /// Per-window backoff so a failing suppression ladder is retried every
+    /// couple of seconds, not at sweep cadence.
+    private var lastSuppressAttempt: [CGWindowID: Date] = [:]
+    /// Containers already logged as "confirming via pixels" — once per
+    /// sighting, not once per 30ms tick.
     private var announcedContainers: Set<CGWindowID> = []
 
     func start() {
@@ -178,7 +181,7 @@ final class HostOverlayWatcher {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
         }
         observers.removeAll()
-        clearCovers()
+        restoreSuppressed()
     }
 
     /// Meeting start is exactly when apps pop their pills — sweep at frame rate
@@ -198,7 +201,7 @@ final class HostOverlayWatcher {
         } else {
             meetingStartedAt = nil
             persistentBeforeMeeting = []
-            clearCovers()
+            restoreSuppressed()
         }
         retune()
     }
@@ -324,10 +327,9 @@ final class HostOverlayWatcher {
 
         // Nothing appeared or disappeared since the last tick, and no capture is
         // in flight — no window can have become a prompt, so skip the AX work.
-        // Active covers still need frame updates (Electron pills drift / recreate
-        // under the same CGWindowID), so those force a full pass. So does a
-        // container due for a pixel re-read: its pill appears *inside* an
-        // existing window, which never changes the candidate set.
+        // A container due for a pixel re-read still forces a full pass: its
+        // pill appears *inside* an existing window, which never changes the
+        // candidate set.
         let containerDue = isMeetingActive && found.contains { candidate in
             candidate.kind == .container && (
                 ocrVerdicts[candidate.windowID].map {
@@ -335,7 +337,7 @@ final class HostOverlayWatcher {
                 } ?? true
             )
         }
-        if ids == lastCandidateIDs, ocrPending.isEmpty, !hasActionableVerdict(in: ids), covers.isEmpty, !containerDue {
+        if ids == lastCandidateIDs, ocrPending.isEmpty, !hasActionableVerdict(in: ids), !containerDue {
             return
         }
         lastCandidateIDs = ids
@@ -344,7 +346,8 @@ final class HostOverlayWatcher {
             inspect(candidate)
         }
         pruneVerdicts(seen: ids)
-        pruneCovers(seen: ids)
+        lastSuppressAttempt = lastSuppressAttempt.filter { ids.contains($0.key) }
+        announcedContainers.formIntersection(ids)
     }
 
     /// True when a pixel read has come back positive for a window still on
@@ -455,43 +458,96 @@ final class HostOverlayWatcher {
         }
         let label = identity.name.isEmpty ? bundleID : identity.name
 
+        // A failing ladder is retried every couple of seconds, never at sweep
+        // cadence — AX calls to a stuck Electron process are not free.
+        let now = Date()
+        if let last = lastSuppressAttempt[candidate.windowID], now.timeIntervalSince(last) < 2 {
+            return
+        }
+        lastSuppressAttempt[candidate.windowID] = now
+
         if candidate.kind == .container {
-            // Never black out the container — it is mostly transparent chrome
-            // far larger than the pill, and it may host other UI (Wispr's
-            // dictation bar), so it is never AX-parked either. Cover exactly
-            // the text region Vision located; until a read lands, keep asking.
-            guard pixelsSayPrompt, let promptRect = verdict?.promptRect else {
+            // Nothing is ever drawn over the user's screen. A container pill
+            // is suppressed for real or not at all — and a container is only
+            // ever moved on pixel evidence, never on identity alone.
+            guard pixelsSayPrompt else {
                 requestPixelRead(for: candidate)
                 if announcedContainers.insert(candidate.windowID).inserted {
-                    Self.logger.notice("Container (\(label, privacy: .public)) flagged [\(source, privacy: .public)] — locating pill text via pixels")
+                    Self.logger.notice("Container (\(label, privacy: .public)) flagged [\(source, privacy: .public)] — confirming via pixels before acting")
                 }
                 return
             }
-            let alreadyCovered = covers[candidate.windowID] != nil
-            cover(windowID: candidate.windowID, over: promptRect)
-            textRegionCovers.insert(candidate.windowID)
+            let strategy = suppressContainer(candidate)
             learn(bundleID: bundleID, pid: candidate.pid)
-            if !alreadyCovered {
-                Self.logger.notice("Overlay (\(label, privacy: .public)) text-region covered in container [\(source, privacy: .public)]: \(evidence, privacy: .public)")
-            }
+            Self.logger.notice("Container (\(label, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
             return
         }
 
-        // Cover from CG first — that is what the user sees. AX dismiss is
-        // best-effort; Electron often ignores position writes.
-        let alreadyCovered = covers[candidate.windowID] != nil
-        cover(windowID: candidate.windowID, over: candidate.frame)
-        var strategy = "covered"
+        // Pills: the AX dismissal ladder, ending in an off-screen park.
+        var strategy = "matched but not dismissable — pill left visible"
         if let axOverlay {
-            let axStrategy = dismiss(axOverlay)
-            if axStrategy != "matched but not dismissable" {
-                strategy = "\(axStrategy)+covered"
-            }
+            strategy = dismiss(axOverlay)
         }
         learn(bundleID: bundleID, pid: candidate.pid)
-        if !alreadyCovered {
-            Self.logger.notice("Overlay (\(label, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
+        Self.logger.notice("Overlay (\(label, privacy: .public)) \(strategy, privacy: .public) [\(source, privacy: .public)]: \(evidence, privacy: .public)")
+    }
+
+    /// Suppression ladder for container pills — every rung removes the pill
+    /// from the screen for real. Parked windows and hidden hosts are restored
+    /// when the meeting ends.
+    private func suppressContainer(_ candidate: Candidate) -> String {
+        if let window = containerAXWindow(for: candidate) {
+            if performNamedCloseAction(on: window) { return "closed via named action" }
+            if park(window, candidate: candidate) { return "parked off-screen (restores after the meeting)" }
         }
+        if let app = NSRunningApplication(processIdentifier: candidate.pid), !app.isHidden, app.hide() {
+            hiddenHosts.insert(candidate.pid)
+            return "host app hidden (unhides after the meeting)"
+        }
+        return "matched but not suppressible — pill left visible"
+    }
+
+    /// The AX element for a container action must be the container itself —
+    /// same frame within tolerance — never a hit-test that climbed into the
+    /// app's real window.
+    private func containerAXWindow(for candidate: Candidate) -> AXUIElement? {
+        guard let window = resolveWindow(for: candidate),
+              let size = windowSize(window),
+              abs(size.width - candidate.frame.width) < 24,
+              abs(size.height - candidate.frame.height) < 24 else { return nil }
+        return window
+    }
+
+    /// Moves the container off every display and verifies the write landed —
+    /// Electron routinely returns success while ignoring the move.
+    private func park(_ window: AXUIElement, candidate: Candidate) -> Bool {
+        if parked[candidate.windowID] != nil { return true }
+        guard let original = windowPosition(window),
+              moveOffScreen(window),
+              let moved = windowPosition(window),
+              moved.x < -10_000 else { return false }
+        parked[candidate.windowID] = (window, original)
+        return true
+    }
+
+    /// Puts everything back the way it was: parked containers return to their
+    /// original positions, hidden hosts unhide. Runs at meeting end and stop.
+    private func restoreSuppressed() {
+        for (id, entry) in parked {
+            var point = entry.original
+            if let value = AXValueCreate(.cgPoint, &point) {
+                AXUIElementSetAttributeValue(entry.window, kAXPositionAttribute as CFString, value)
+            }
+            Self.logger.notice("Restored parked container window \(id)")
+        }
+        parked.removeAll()
+        for pid in hiddenHosts {
+            NSRunningApplication(processIdentifier: pid)?.unhide()
+            Self.logger.notice("Unhid host app pid \(pid)")
+        }
+        hiddenHosts.removeAll()
+        lastSuppressAttempt.removeAll()
+        announcedContainers.removeAll()
     }
 
     /// Captures and reads a candidate's pixels once, caching the verdict. The
@@ -525,29 +581,24 @@ final class HostOverlayWatcher {
             let isPrompt = !read.text.isEmpty
                 && self.matcher.isNotetakerPill(read.text)
                 && !read.text.localizedCaseInsensitiveContains("Kamui")
+            let previous = self.ocrVerdicts[windowID]
             self.ocrVerdicts[windowID] = OCRVerdict(
                 isNotetakerPrompt: isPrompt,
                 checkedAt: Date(),
                 text: read.text,
                 promptRect: read.textRect.isNull ? nil : read.textRect
             )
+            // Re-reads run every few seconds during a meeting — log only when
+            // the verdict or the text actually changed, or the log drowns.
+            let changed = previous?.isNotetakerPrompt != isPrompt || previous?.text != read.text
             if isPrompt {
-                // Logged on match, and act on this tick — don't wait for the
-                // next timer fire. No-text reads (an empty container between
-                // pills) stay quiet: at a 3s re-check they would drown the log.
-                Self.logger.notice("Pixel read MATCH window \(windowID): \(String(read.text.prefix(140)), privacy: .public)")
+                if changed {
+                    Self.logger.notice("Pixel read MATCH window \(windowID): \(String(read.text.prefix(140)), privacy: .public)")
+                }
+                // Act on this tick — don't wait for the next timer fire.
                 self.sweep()
-            } else {
-                if !read.text.isEmpty {
-                    Self.logger.notice("Pixel read no-match window \(windowID): \(String(read.text.prefix(140)), privacy: .public)")
-                }
-                // The pill's text is gone — its text-region cover goes with it.
-                if self.textRegionCovers.contains(windowID), let panel = self.covers[windowID] {
-                    panel.orderOut(nil)
-                    panel.close()
-                    self.covers[windowID] = nil
-                    self.textRegionCovers.remove(windowID)
-                }
+            } else if changed, !read.text.isEmpty {
+                Self.logger.notice("Pixel read no-match window \(windowID): \(String(read.text.prefix(140)), privacy: .public)")
             }
         }
     }
@@ -684,72 +735,6 @@ final class HostOverlayWatcher {
         }
         if moveOffScreen(window) { return "moved off-screen" }
         return "matched but not dismissable"
-    }
-
-    /// Draws an opaque Quiet panel over a Quartz-space screen rect so the pill
-    /// is invisible and unclickable even when the host ignores AX moves.
-    private func cover(windowID: CGWindowID, over quartzFrame: CGRect) {
-        // CG window bounds are top-left-origin (Quartz); NSWindow frames are
-        // bottom-left-origin (Cocoa) — without the flip the panel lands
-        // vertically mirrored, covering nothing.
-        let frame = Self.cocoaFrame(fromQuartz: quartzFrame.insetBy(dx: -2, dy: -2))
-        if let existing = covers[windowID] {
-            if !existing.frame.equalTo(frame) {
-                existing.setFrame(frame, display: true)
-            }
-            existing.orderFrontRegardless()
-            return
-        }
-
-        let panel = NSPanel(
-            contentRect: frame,
-            styleMask: [.borderless, .nonactivatingPanel],
-            backing: .buffered,
-            defer: false
-        )
-        panel.isOpaque = true
-        panel.backgroundColor = NSColor.black.withAlphaComponent(0.92)
-        panel.hasShadow = false
-        panel.level = NSWindow.Level(Int(CGWindowLevelForKey(.popUpMenuWindow)) + 2)
-        panel.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
-        panel.hidesOnDeactivate = false
-        panel.ignoresMouseEvents = false
-        panel.isReleasedWhenClosed = false
-        panel.orderFrontRegardless()
-        covers[windowID] = panel
-    }
-
-    /// Cocoa global coordinates flip Quartz's vertically through the primary
-    /// display (whose Cocoa origin is its bottom-left corner).
-    private static func cocoaFrame(fromQuartz quartz: CGRect) -> CGRect {
-        let primaryHeight = NSScreen.screens.first?.frame.maxY ?? quartz.maxY
-        return CGRect(
-            x: quartz.origin.x,
-            y: primaryHeight - quartz.origin.y - quartz.height,
-            width: quartz.width,
-            height: quartz.height
-        )
-    }
-
-    private func pruneCovers(seen: Set<CGWindowID>) {
-        let stale = covers.keys.filter { !seen.contains($0) }
-        for id in stale {
-            covers[id]?.orderOut(nil)
-            covers[id]?.close()
-            covers[id] = nil
-        }
-        textRegionCovers.formIntersection(seen)
-        announcedContainers.formIntersection(seen)
-    }
-
-    private func clearCovers() {
-        for panel in covers.values {
-            panel.orderOut(nil)
-            panel.close()
-        }
-        covers.removeAll()
-        textRegionCovers.removeAll()
-        announcedContainers.removeAll()
     }
 
     private func moveOffScreen(_ window: AXUIElement) -> Bool {
