@@ -9,6 +9,10 @@ struct NotetakerPhrasesTests {
         #expect(NotetakerPhrases.containsStrong("Start AI Meeting Note Transcribing opens Notion Start transcribing"))
         // Wispr Flow — a dictation app, not a notetaker, that grew a pill.
         #expect(NotetakerPhrases.containsStrong("Meeting detected Now Start Notetaker"))
+        #expect(NotetakerPhrases.containsStrong("AI Meeting Note"))
+        // "Start Wispr" is vendor copy — it lives in Competitors.json, not
+        // here, and is covered by NotificationWatcherTests.
+        #expect(!NotetakerPhrases.containsStrong("Start Wispr Notetaker"))
         // Zoom via Chrome: carries no vendor name at all.
         #expect(NotetakerPhrases.containsStrong("Note-taking is available Chrome"))
     }

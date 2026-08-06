@@ -33,4 +33,11 @@ final class CompetitorCatalog: Sendable {
         let bodies = entries.flatMap(\.notificationBodyPatterns)
         return Array(Set(titles + bodies))
     }
+
+    /// Bundle ids of host apps whose meeting pills are covered rather than the
+    /// app being touched — the entries marked `popsMeetingPills` in
+    /// Competitors.json.
+    var pillHostBundleIds: Set<String> {
+        Set(entries.filter { $0.popsMeetingPills ?? false }.flatMap(\.bundleIds))
+    }
 }

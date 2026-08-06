@@ -15,6 +15,10 @@ struct CompetitorEntry: Codable, Identifiable, Hashable, Sendable {
     let notificationTitlePatterns: [String]
     let notificationBodyPatterns: [String]
     let policy: CompetitorPolicy
+    /// True for host apps that pop meeting pills but must never be quit or
+    /// suspended (the user's workspace, a dictation tool) — only their
+    /// pill-sized floating windows are suppressed during meetings.
+    var popsMeetingPills: Bool? = nil
 }
 
 struct InstalledCompetitor: Identifiable, Hashable, Sendable {

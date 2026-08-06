@@ -14,47 +14,25 @@ final class NotificationWatcher {
 
     private var timer: Timer?
     private var isSweeping = false
+    private var isMeetingActive = false
     /// Window-created observers per notification-surface pid — kills a banner
     /// during its fade-in instead of on the next poll tick.
     private var observers: [pid_t: AXObserver] = [:]
 
-    /// Vendor identity markers, matched as whole-word token subsequences.
-    /// Derived from the catalog (entry names + notification title patterns)
-    /// plus a builtin seed so an empty catalog still covers the big names.
-    private let vendorMarkers: [String]
-
-    /// Tokens the generic phrases are made of (plus filler like "Now" that
-    /// competitors put in banner titles). A catalog string whose tokens are
-    /// all generic carries no vendor identity and is discarded.
-    /// "read" is here so Read AI's bare "Read" title pattern is discarded —
-    /// it's a common English word, and "Read AI" (via its "ai" token) still
-    /// carries vendor identity on its own.
-    private static let genericTokens: Set<String> = [
-        "meeting", "detected", "start", "notetaker", "note", "taking",
-        "is", "available", "taker", "ready", "take", "notes", "with",
-        "now", "browser", "helper", "helpers", "read"
-    ]
-
-    /// Known vendors, kept even if the bundled catalog fails to load.
-    private static let builtinVendorMarkers: [String] = [
-        "Otter", "Granola", "Fireflies", "Fathom", "AI Companion", "Notion"
-    ]
+    /// All prompt matching — generic phrases plus catalog-derived vendor rules
+    /// — lives in the shared matcher so this layer can't drift from Layer C.
+    private let matcher: NotetakerPromptMatcher
 
     init(catalog: CompetitorCatalog) {
-        let candidates = catalog.entries.map(\.name)
-            + catalog.entries.flatMap(\.notificationTitlePatterns)
-        let derived = candidates.filter { candidate in
-            let tokens = NameTokenMatcher.tokens(of: candidate)
-            return !tokens.isEmpty && !tokens.allSatisfy { Self.genericTokens.contains($0) }
-        }
-        self.vendorMarkers = Array(Set(derived + Self.builtinVendorMarkers))
+        self.matcher = NotetakerPromptMatcher(catalog: catalog)
     }
 
     func start() {
         stop()
-        Self.logger.notice("NotificationWatcher.start axTrusted=\(AXIsProcessTrusted()) markers=\(self.vendorMarkers.count)")
+        Self.logger.notice("NotificationWatcher.start axTrusted=\(AXIsProcessTrusted()) markers=\(self.matcher.vendorMarkers.count)")
         guard AXIsProcessTrusted() else { return }
-        timer = Timer.scheduledTimer(withTimeInterval: 0.75, repeats: true) { [weak self] _ in
+        let interval: TimeInterval = isMeetingActive ? 0.15 : 0.5
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.sweep()
             }
@@ -69,6 +47,12 @@ final class NotificationWatcher {
             CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .defaultMode)
         }
         observers.removeAll()
+    }
+
+    func setMeetingActive(_ active: Bool) {
+        guard active != isMeetingActive else { return }
+        isMeetingActive = active
+        if timer != nil { start() }
     }
 
     private func ensureObserver(for app: NSRunningApplication) {
@@ -125,9 +109,11 @@ final class NotificationWatcher {
                let windows = windowsRef as? [AXUIElement] {
                 for window in windows {
                     let subrole = copyString(window, kAXSubroleAttribute as String) ?? ""
-                    guard subrole == "AXSystemDialog" else { continue }
-                    // Scoped to the banner: dumping the whole app element walks
-                    // thousands of menu items synchronously and stalls startup.
+                    // Prefer AXSystemDialog (banner chrome) but also walk other
+                    // NC windows — macOS versions vary which subrole they use.
+                    if !subrole.isEmpty && subrole != "AXSystemDialog" && subrole != "AXFloatingWindow" {
+                        continue
+                    }
                     if debug {
                         dumpTree(window, depth: 0, path: bid.isEmpty ? name : bid)
                     }
@@ -163,7 +149,7 @@ final class NotificationWatcher {
     }
 
     private func dismissMatchingBanners(in element: AXUIElement, depth: Int) {
-        guard depth < 6 else { return }
+        guard depth < 10 else { return }
 
         let blob = elementTextBlob(element)
         if !blob.isEmpty, isNotetakerPrompt(blob), !blob.localizedCaseInsensitiveContains("Quiet") {
@@ -185,13 +171,17 @@ final class NotificationWatcher {
         }
     }
 
-    /// A banner is a notetaker prompt when it contains a strong phrase, or a
-    /// weak phrase together with a vendor marker. "Meeting notes" alone is
-    /// never dismissed.
+    /// A banner is a notetaker prompt when it contains a strong phrase, a weak
+    /// phrase together with a vendor marker, or a catalog vendor's identity
+    /// next to that vendor's own observed prompt copy. "Meeting notes" alone
+    /// is never dismissed, nor is a vendor's name next to unrelated copy.
+    ///
+    /// Deliberately not gated on meeting state: vendors fire these banners off
+    /// their own calendars and routinely beat Quiet's detector, which needs a
+    /// live call window first — a gate on isMeetingActive is exactly the
+    /// window the leaked banners used to arrive in.
     func isNotetakerPrompt(_ text: String) -> Bool {
-        if NotetakerPhrases.containsStrong(text) { return true }
-        guard NotetakerPhrases.containsWeak(text) else { return false }
-        return NameTokenMatcher.name(text, matchesAnyOf: vendorMarkers)
+        matcher.isNotetakerBanner(text)
     }
 
     private func elementTextBlob(_ element: AXUIElement) -> String {

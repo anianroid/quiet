@@ -59,7 +59,8 @@ struct ProcessController: Sendable {
         "com.apple.Safari",
         "org.mozilla.firefox",
         "com.apple.systempreferences",
-        "com.electron.wispr-flow" // dictation — not a meeting notetaker
+        "com.electron.wispr-flow", // dictation — not a meeting notetaker
+        "com.electron.wispr-flow.accessibility-mac-app"
     ]
 
     private static let protectedNameFragments = [
