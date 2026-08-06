@@ -1,6 +1,27 @@
 import Testing
 
 // classifyMeetingWindow is a pure (owner, title) -> label function.
+
+// Merely having Zoom open must never count as a meeting: the home window
+// ("Zoom Workplace"), Settings, and Sign In are not calls. Only the live
+// meeting/webinar windows are.
+struct ZoomWindowTitleTests {
+    private let detector = MeetingDetector()
+
+    @Test func homeAndSettingsWindowsAreNotMeetings() {
+        #expect(!detector.zoomTitleIndicatesMeeting("Zoom Workplace"))
+        #expect(!detector.zoomTitleIndicatesMeeting("Zoom"))
+        #expect(!detector.zoomTitleIndicatesMeeting("Settings"))
+        #expect(!detector.zoomTitleIndicatesMeeting("Sign In"))
+    }
+
+    @Test func liveMeetingWindowsAreMeetings() {
+        #expect(detector.zoomTitleIndicatesMeeting("Zoom Meeting"))
+        #expect(detector.zoomTitleIndicatesMeeting("Zoom Webinar"))
+        #expect(detector.zoomTitleIndicatesMeeting("zoom share toolbar"))
+        #expect(detector.zoomTitleIndicatesMeeting("Meeting Controls"))
+    }
+}
 struct MeetingDetectorTests {
     private let detector = MeetingDetector()
 

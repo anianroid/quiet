@@ -71,13 +71,67 @@ actor MeetingDetector {
         // 2) Native meeting apps with an on-screen window.
         for app in NSWorkspace.shared.runningApplications {
             if let bid = app.bundleIdentifier, meetingBundleIds.contains(bid) {
-                if appOwnsOnScreenWindow(app) {
+                if appIsInLiveMeeting(app, bundleID: bid) {
                     return app.localizedName ?? bid
                 }
             }
         }
 
         return nil
+    }
+
+    /// Zoom's home/login window is a tall window too — merely having Zoom
+    /// open must never count as a meeting. A live call is identified by its
+    /// window title; only when no titles are readable at all does the
+    /// tall-window heuristic apply, so detection never goes fully blind.
+    private func appIsInLiveMeeting(_ app: NSRunningApplication, bundleID: String) -> Bool {
+        guard bundleID == "us.zoom.xos" else {
+            return appOwnsOnScreenWindow(app)
+        }
+        let titles = windowTitles(for: app)
+        guard !titles.isEmpty else { return appOwnsOnScreenWindow(app) }
+        return titles.contains { zoomTitleIndicatesMeeting($0) }
+    }
+
+    /// `nonisolated` + internal so unit tests can exercise it directly.
+    /// "Zoom Workplace" (home), "Settings", and "Sign In" never match.
+    nonisolated func zoomTitleIndicatesMeeting(_ title: String) -> Bool {
+        let lower = title.lowercased()
+        return lower.contains("zoom meeting")
+            || lower.contains("zoom webinar")
+            || lower.contains("meeting controls")
+            || lower.contains("zoom share")
+    }
+
+    /// All readable window titles for one app — CG when Screen Recording is
+    /// granted, the app's own AX windows otherwise.
+    private func windowTitles(for app: NSRunningApplication) -> [String] {
+        let pid = app.processIdentifier
+        let opts = CGWindowListOption(arrayLiteral: .optionOnScreenOnly, .excludeDesktopElements)
+        var titles: [String] = []
+        if let info = CGWindowListCopyWindowInfo(opts, kCGNullWindowID) as? [[String: Any]] {
+            for window in info {
+                guard (window[kCGWindowOwnerPID as String] as? pid_t) == pid,
+                      let title = window[kCGWindowName as String] as? String,
+                      !title.isEmpty else { continue }
+                titles.append(title)
+            }
+        }
+        if !titles.isEmpty { return titles }
+
+        guard AXIsProcessTrusted() else { return [] }
+        let appElement = AXUIElementCreateApplication(pid)
+        var windowsRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appElement, kAXWindowsAttribute as CFString, &windowsRef) == .success,
+              let windows = windowsRef as? [AXUIElement] else { return [] }
+        for window in windows {
+            var titleRef: CFTypeRef?
+            if AXUIElementCopyAttributeValue(window, kAXTitleAttribute as CFString, &titleRef) == .success,
+               let title = titleRef as? String, !title.isEmpty {
+                titles.append(title)
+            }
+        }
+        return titles
     }
 
     private func browserMeetingSignal() -> String? {
