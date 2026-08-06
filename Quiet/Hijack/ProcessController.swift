@@ -114,11 +114,20 @@ struct ProcessController: Sendable {
     /// cannot go stale; entries are dropped when the process exits.
     @MainActor private static var benignPIDs: Set<pid_t> = []
 
+    /// PIDs currently frozen by Kamui, with the label they were frozen under.
+    /// A suspended process cannot record a single frame of audio, keeps all of
+    /// its state, and resumes exactly where it was — which is why this beats
+    /// force-quitting a notetaker for the duration of a call.
+    @MainActor private static var suspendedPIDs: [pid_t: String] = [:]
+
     @MainActor
     func suspendCompetitors(from installed: [InstalledCompetitor]) -> [HijackAction] {
         var actions: [HijackAction] = []
         let running = NSWorkspace.shared.runningApplications
         Self.benignPIDs.formIntersection(Set(running.map(\.processIdentifier)))
+        // A pid that exited while frozen is simply gone.
+        let livePIDs = Set(running.map(\.processIdentifier))
+        Self.suspendedPIDs = Self.suspendedPIDs.filter { livePIDs.contains($0.key) }
 
         for app in running {
             // processIdentifier is a local read; everything below is not.
@@ -127,24 +136,72 @@ struct ProcessController: Sendable {
                 Self.benignPIDs.insert(app.processIdentifier)
                 continue
             }
-            let ok = terminate(app, label: label)
-            actions.append(HijackAction(competitorName: label, action: ok ? "force_quit" : "terminate_failed", at: Date()))
+            // Already frozen — re-freezing every watchdog tick is pointless.
+            guard Self.suspendedPIDs[app.processIdentifier] == nil else { continue }
+            let ok = freeze(app, label: label)
+            actions.append(HijackAction(competitorName: label, action: ok ? "suspended" : "suspend_failed", at: Date()))
         }
 
         _ = installed
         return actions
     }
 
-    /// Kills the app and logs the outcome under one competitor label.
-    private func terminate(_ app: NSRunningApplication, label: String) -> Bool {
-        let pid = app.processIdentifier
-        let ok = hardKill(app)
-        if ok {
-            Self.logger.info("Force-quit \(label, privacy: .public) (pid \(pid))")
-        } else {
-            Self.logger.error("Failed to terminate \(label, privacy: .public) (pid \(pid))")
+    /// Thaws everything Kamui froze. Called when the meeting ends, when the
+    /// watchdog disarms, and on quit — a competitor must never be left frozen.
+    @MainActor
+    func resumeSuspendedCompetitors() -> [HijackAction] {
+        var actions: [HijackAction] = []
+        for (pid, label) in Self.suspendedPIDs {
+            guard pid > 1 else { continue }
+            if kill(pid, 0) != 0 {
+                // Process exited while frozen; nothing to thaw.
+                continue
+            }
+            let ok = kill(pid, SIGCONT) == 0
+            if ok {
+                Self.logger.info("Resumed \(label, privacy: .public) (pid \(pid))")
+            } else {
+                Self.logger.error("Failed to resume \(label, privacy: .public) (pid \(pid)) — sending SIGCONT again")
+                kill(pid, SIGCONT)
+            }
+            actions.append(HijackAction(competitorName: label, action: ok ? "resumed" : "resume_failed", at: Date()))
         }
-        return ok
+        Self.suspendedPIDs.removeAll()
+        return actions
+    }
+
+    /// Safety net for a Kamui that died mid-meeting: SIGCONT every running
+    /// competitor, whether or not this process froze it. `suspendedPIDs` lives
+    /// in memory only, so a crash would otherwise leave an app frozen forever
+    /// — the one unacceptable failure of a suspend-based hold. SIGCONT to a
+    /// process that isn't stopped is a no-op, so this is safe to run on launch.
+    @MainActor
+    func thawEveryCompetitor() {
+        for app in NSWorkspace.shared.runningApplications {
+            guard let label = competitorLabel(for: app) else { continue }
+            let pid = app.processIdentifier
+            guard pid > 1 else { continue }
+            if kill(pid, SIGCONT) == 0 {
+                Self.logger.info("Startup thaw: sent SIGCONT to \(label, privacy: .public) (pid \(pid))")
+            }
+        }
+        Self.suspendedPIDs.removeAll()
+    }
+
+    /// Freezes the app with SIGSTOP. Nothing is killed, so no state is lost and
+    /// no relaunch is needed: the process simply stops executing, which stops
+    /// it capturing audio, for exactly as long as the meeting lasts.
+    @MainActor
+    private func freeze(_ app: NSRunningApplication, label: String) -> Bool {
+        let pid = app.processIdentifier
+        guard pid > 1, !app.isTerminated else { return false }
+        guard kill(pid, SIGSTOP) == 0 else {
+            Self.logger.error("Failed to suspend \(label, privacy: .public) (pid \(pid)): errno \(errno)")
+            return false
+        }
+        Self.suspendedPIDs[pid] = label
+        Self.logger.info("Suspended \(label, privacy: .public) (pid \(pid)) for the meeting")
+        return true
     }
 
     /// The display name to log a kill under, or nil when the app must be left
@@ -190,36 +247,6 @@ struct ProcessController: Sendable {
         }
 
         return nil
-    }
-
-    /// Electron notetakers ignore soft quit. Soft-ask once, then forceTerminate + SIGKILL.
-    private func hardKill(_ app: NSRunningApplication) -> Bool {
-        if app.isTerminated { return true }
-
-        let pid = app.processIdentifier
-        guard pid > 1 else { return false }
-
-        _ = app.terminate()
-        if app.isTerminated { return true }
-
-        _ = app.forceTerminate()
-        if app.isTerminated { return true }
-
-        // Last resort — NSRunningApplication sometimes fails on sandboxed Electron helpers.
-        kill(pid, SIGKILL)
-        usleep(50_000)
-        return app.isTerminated || kill(pid, 0) != 0
-    }
-
-    private func shouldTerminateByName(app: NSRunningApplication, entry: CompetitorEntry) -> Bool {
-        if let bid = app.bundleIdentifier {
-            if Self.protectedBundleIds.contains(bid) || bid.hasPrefix("com.apple.") { return false }
-        }
-        guard let name = app.localizedName else { return false }
-        if isProtectedName(name) { return false }
-
-        let hints = entry.helperProcessNames + entry.appNameHints
-        return NameTokenMatcher.name(name, matchesAnyOf: hints)
     }
 
     /// Internal (not private) so unit tests can verify protected names are never terminated.

@@ -53,9 +53,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        Task { @MainActor in
-            AppState.shared.quietBanner.destroy()
-            AppState.shared.notificationWatcher.stop()
+        // Synchronous on purpose: a Task here may never run before exit, and
+        // thawing suspended notetakers cannot be best-effort. willTerminate is
+        // delivered on the main thread.
+        MainActor.assumeIsolated {
+            let state = AppState.shared
+            state.processController.thawEveryCompetitor()
+            state.hostOverlayWatcher.stop()
+            state.notificationWatcher.stop()
+            state.quietBanner.destroy()
         }
     }
 

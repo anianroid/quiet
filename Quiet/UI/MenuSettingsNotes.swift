@@ -93,8 +93,8 @@ struct SettingsView: View {
     var body: some View {
         TabView {
             Form {
-                Toggle("Hold competing notetakers quit during meetings", isOn: $appState.quitCompetitorsEnabled)
-                Text("Quits Granola / Fireflies / Otter / Fathom (and helpers). Never quits Zoom, Chrome, or Notion.")
+                Toggle("Freeze competing notetakers during meetings", isOn: $appState.quitCompetitorsEnabled)
+                Text("Freezes Granola / Fireflies / Otter / Fathom (and helpers) for the call, then resumes them. Nothing is quit; Zoom, Chrome, and Notion are never touched.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
